@@ -119,12 +119,15 @@ Example:
 
 Hagonoy extracts into a temporary sibling directory first. It promotes that directory to the requested destination only after extraction succeeds and the top-level `server.properties` plus configured relative startup file are present. It does **not** start the restored server. Inspect the copy before deciding to use it. Failed extractions are left in their temporary directory for inspection; they do not overwrite the requested destination.
 
-Run the restore and Playit detection safety tests with:
+Run the isolated restore, Playit, and Paper updater safety tests with:
 
 ```bash
 bash tests/restore-check.sh
 bash tests/playit-detection-check.sh
+bash tests/paper-update-check.sh
 ```
+
+The Paper updater test uses a temporary fake server and mocked Paper API/download responses. It tests successful installation and rollback after a simulated readiness failure; it does not contact PaperMC or touch the live Minecraft directory.
 
 ## 8. Paper stable-build updates
 
