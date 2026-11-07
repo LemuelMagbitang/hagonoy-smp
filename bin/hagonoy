@@ -20,6 +20,10 @@ PLAYIT_AUTO_START="false"
 PLAYIT_COMMAND="playit"
 PLAYIT_SESSION="playit-tunnel"
 PLAYIT_STOP_WITH_SERVER="false"
+PAPER_JAR="server.jar"
+PAPER_PREVIOUS_JAR_RETENTION="3"
+PAPER_USER_AGENT="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
+PAPER_STAGED_JAR=""
 
 log() { printf '[hagonoy] %s\n' "$*"; }
 warn() { printf '[hagonoy] WARNING: %s\n' "$*" >&2; }
@@ -38,6 +42,8 @@ validate_config() {
     [[ "$BACKUP_RETENTION" =~ ^[0-9]+$ ]] || die "BACKUP_RETENTION must be zero or a positive integer."
     [[ "$PLAYIT_AUTO_START" == "true" || "$PLAYIT_AUTO_START" == "false" ]] || die "PLAYIT_AUTO_START must be true or false."
     [[ "$PLAYIT_STOP_WITH_SERVER" == "true" || "$PLAYIT_STOP_WITH_SERVER" == "false" ]] || die "PLAYIT_STOP_WITH_SERVER must be true or false."
+    [[ "$PAPER_JAR" =~ ^[a-zA-Z0-9._-]+\.jar$ ]] || die "PAPER_JAR must be a simple .jar filename without directory components."
+    [[ "$PAPER_PREVIOUS_JAR_RETENTION" =~ ^[0-9]+$ ]] && (( PAPER_PREVIOUS_JAR_RETENTION >= 1 )) || die "PAPER_PREVIOUS_JAR_RETENTION must be a positive integer."
     [[ "$TMUX_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "TMUX_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
     [[ "$PLAYIT_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "PLAYIT_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
 }
@@ -227,10 +233,19 @@ backup_exit_cleanup() {
         log "Restoring the server's previous running state after backup exit/interruption..."
         start_server || warn "Automatic restart failed. Inspect the server and start it manually if appropriate."
     fi
+    if [[ -n "$PAPER_STAGED_JAR" && -f "$PAPER_STAGED_JAR" ]]; then
+        rm -f -- "$PAPER_STAGED_JAR"
+    fi
     exit "$exit_code"
 }
 
 backup_server() {
+    local keep_stopped=false
+    if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--keep-stopped" ) ]]; then
+        die "Usage: ./hagonoy backup [--keep-stopped]"
+    fi
+    [[ "${1:-}" == "--keep-stopped" ]] && keep_stopped=true
+
     require_command tmux
     require_command ss
     require_command tar
@@ -301,10 +316,14 @@ backup_server() {
     fi
 
     if [[ "$was_running" == true ]]; then
-        log "Restarting Minecraft because it was running before the backup..."
         BACKUP_RESTART_REQUIRED=false
         trap - EXIT INT TERM
-        start_server
+        if [[ "$keep_stopped" == true ]]; then
+            log "Backup completed; Minecraft is intentionally left stopped for the maintenance operation."
+        else
+            log "Restarting Minecraft because it was running before the backup..."
+            start_server
+        fi
     fi
 }
 
