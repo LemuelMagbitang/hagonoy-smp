@@ -1,0 +1,33 @@
+# Hagonoy SMP manager configuration
+# Copy this file to config/manager.conf and edit the values.
+# This file contains no passwords or tokens. Never commit private credentials.
+
+# Absolute path to the live Minecraft server directory.
+MC_DIR="$HOME/minecraft-server"
+
+# Name of the tmux session that runs Minecraft.
+TMUX_SESSION="mcserver"
+
+# Command to start Minecraft, run from MC_DIR.
+# Keep your existing start.sh if it already contains the correct Java flags.
+START_COMMAND="./start.sh"
+
+# Local server port used only as a secondary safety check.
+MINECRAFT_PORT="25565"
+
+# Optional startup readiness check against newly written log content.
+SERVER_LOG="logs/latest.log"
+READY_PATTERN="Done"
+START_TIMEOUT_SECONDS="900"
+STOP_TIMEOUT_SECONDS="180"
+
+# Backups are uncompressed tar archives to avoid extra CPU/RAM usage.
+# Prefer a separate mounted disk, for example /media/$USER/MinecraftBackups.
+BACKUP_DIR="$HOME/minecraft-backups"
+BACKUP_RETENTION="7"
+
+# Playit is opt-in. Enable after confirming the agent is installed and logged in.
+PLAYIT_AUTO_START="false"
+PLAYIT_COMMAND="playit"
+PLAYIT_SESSION="playit-tunnel"
+PLAYIT_STOP_WITH_SERVER="false"

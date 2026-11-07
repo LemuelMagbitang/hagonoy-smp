@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# Hagonoy SMP Manager - safe, single-host Minecraft server controls.
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_FILE="${HAGONOY_CONFIG:-$PROJECT_DIR/config/manager.conf}"
+
+# Defaults; config/manager.conf overrides these.
+MC_DIR="$HOME/minecraft-server"
+TMUX_SESSION="mcserver"
+START_COMMAND="./start.sh"
+MINECRAFT_PORT="25565"
+SERVER_LOG="logs/latest.log"
+READY_PATTERN="Done"
+START_TIMEOUT_SECONDS="900"
+STOP_TIMEOUT_SECONDS="180"
+BACKUP_DIR="$HOME/minecraft-backups"
+BACKUP_RETENTION="7"
+PLAYIT_AUTO_START="false"
+PLAYIT_COMMAND="playit"
+PLAYIT_SESSION="playit-tunnel"
+PLAYIT_STOP_WITH_SERVER="false"
+
+log() { printf '[hagonoy] %s\n' "$*"; }
+warn() { printf '[hagonoy] WARNING: %s\n' "$*" >&2; }
+die() { printf '[hagonoy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command '$1' is missing. Run ./install.sh or install it with apt."
+}
+
+validate_config() {
+    [[ -n "$MC_DIR" ]] || die "MC_DIR is empty in $CONFIG_FILE"
+    [[ -n "$TMUX_SESSION" ]] || die "TMUX_SESSION is empty in $CONFIG_FILE"
+    [[ "$MINECRAFT_PORT" =~ ^[0-9]{1,5}$ ]] && (( MINECRAFT_PORT >= 1 && MINECRAFT_PORT <= 65535 )) || die "MINECRAFT_PORT must be between 1 and 65535."
+    [[ "$START_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( START_TIMEOUT_SECONDS > 0 )) || die "START_TIMEOUT_SECONDS must be a positive integer."
+    [[ "$STOP_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( STOP_TIMEOUT_SECONDS > 0 )) || die "STOP_TIMEOUT_SECONDS must be a positive integer."
+    [[ "$BACKUP_RETENTION" =~ ^[0-9]+$ ]] || die "BACKUP_RETENTION must be zero or a positive integer."
+    [[ "$PLAYIT_AUTO_START" == "true" || "$PLAYIT_AUTO_START" == "false" ]] || die "PLAYIT_AUTO_START must be true or false."
+    [[ "$PLAYIT_STOP_WITH_SERVER" == "true" || "$PLAYIT_STOP_WITH_SERVER" == "false" ]] || die "PLAYIT_STOP_WITH_SERVER must be true or false."
+    [[ "$TMUX_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "TMUX_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
+    [[ "$PLAYIT_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "PLAYIT_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
+}
+
+has_tmux_session() {
+    tmux has-session -t "$1" 2>/dev/null
+}
+
+port_is_open() {
+    ss -ltnH "sport = :$MINECRAFT_PORT" 2>/dev/null | grep -q .
+}
+
+shell_quote() {
+    # Print one shell-safe representation suitable as a single argument.
+    printf '%q' "$1"
+}
+
+start_playit() {
+    [[ "$PLAYIT_AUTO_START" == "true" ]] || { log "Playit auto-start is disabled in config."; return 0; }
+    if has_tmux_session "$PLAYIT_SESSION"; then
+        log "Playit session '$PLAYIT_SESSION' is already running."
+        return 0
+    fi
+    local quoted
+    quoted="$(shell_quote "$PLAYIT_COMMAND")"
+    log "Starting Playit in tmux session '$PLAYIT_SESSION'..."
+    tmux new-session -d -s "$PLAYIT_SESSION" -c "$HOME" "bash -lc $quoted"
+}
+
+stop_playit() {
+    if ! has_tmux_session "$PLAYIT_SESSION"; then
+        log "Playit session '$PLAYIT_SESSION' is not running."
+        return 0
+    fi
+    log "Requesting Playit agent shutdown (Ctrl+C)..."
+    tmux send-keys -t "$PLAYIT_SESSION" C-c
+    local i
+    for ((i=0; i<20; i++)); do
+        has_tmux_session "$PLAYIT_SESSION" || { log "Playit stopped."; return 0; }
+        sleep 1
+    done
+    warn "Playit session is still present. Inspect it with: tmux attach -t $PLAYIT_SESSION"
+    return 1
+}
+
+start_server() {
+    require_command tmux
+    require_command ss
+    [[ -d "$MC_DIR" ]] || die "Minecraft directory does not exist: $MC_DIR"
+
+    if has_tmux_session "$TMUX_SESSION"; then
+        log "Minecraft tmux session '$TMUX_SESSION' already exists."
+        return 0
+    fi
+    if port_is_open; then
+        die "Port $MINECRAFT_PORT is already listening but tmux session '$TMUX_SESSION' is absent. Refusing to start a second server. Investigate the process first."
+    fi
+
+    if [[ "$START_COMMAND" == ./* ]]; then
+        [[ -f "$MC_DIR/${START_COMMAND#./}" ]] || die "START_COMMAND target not found: $MC_DIR/${START_COMMAND#./}"
+        [[ -x "$MC_DIR/${START_COMMAND#./}" ]] || die "START_COMMAND is not executable: $MC_DIR/${START_COMMAND#./} (run chmod +x on it or set START_COMMAND=\"bash ./start.sh\")."
+    fi
+
+    local log_path="$MC_DIR/$SERVER_LOG"
+    local previous_size=0
+    [[ -f "$log_path" ]] && previous_size="$(wc -c < "$log_path")"
+
+    local quoted
+    quoted="$(shell_quote "$START_COMMAND")"
+    log "Starting Minecraft in '$MC_DIR' (tmux: $TMUX_SESSION)..."
+    tmux new-session -d -s "$TMUX_SESSION" -c "$MC_DIR" "bash -lc $quoted"
+
+    log "Waiting up to ${START_TIMEOUT_SECONDS}s for readiness pattern: '$READY_PATTERN'"
+    local elapsed=0 ready=false
+    while (( elapsed < START_TIMEOUT_SECONDS )); do
+        if ! has_tmux_session "$TMUX_SESSION"; then
+            die "Minecraft process/session exited before readiness. Inspect $log_path and tmux history if available."
+        fi
+        if [[ -f "$log_path" ]]; then
+            local current_size
+            current_size="$(wc -c < "$log_path")"
+            if (( current_size >= previous_size )); then
+                if tail -c +$((previous_size + 1)) "$log_path" 2>/dev/null | grep -Fq -- "$READY_PATTERN"; then
+                    ready=true
+                    break
+                fi
+            else
+                # The server rotated/recreated latest.log during startup.
+                if grep -Fq -- "$READY_PATTERN" "$log_path"; then
+                    ready=true
+                    break
+                fi
+            fi
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    if [[ "$ready" != true ]]; then
+        warn "Readiness was not confirmed before timeout. The server may still be loading. Do NOT start another copy."
+        warn "Inspect with: ./hagonoy status   and   ./hagonoy attach"
+        return 1
+    fi
+
+    log "Minecraft reported ready."
+    if [[ "$PLAYIT_AUTO_START" == "true" ]]; then
+        start_playit || warn "Minecraft is running, but Playit did not start successfully."
+    fi
+}
+
+stop_server() {
+    require_command tmux
+    require_command ss
+
+    if ! has_tmux_session "$TMUX_SESSION"; then
+        if port_is_open; then
+            die "Port $MINECRAFT_PORT is open but tmux session '$TMUX_SESSION' is absent. Refusing to stop an unidentified process automatically."
+        fi
+        log "Minecraft is already stopped."
+        if [[ "$PLAYIT_STOP_WITH_SERVER" == "true" ]]; then stop_playit || true; fi
+        return 0
+    fi
+
+    log "Sending save-all flush to Minecraft..."
+    tmux send-keys -t "$TMUX_SESSION" "save-all flush" C-m
+    sleep 2
+    log "Sending graceful stop command..."
+    tmux send-keys -t "$TMUX_SESSION" "stop" C-m
+
+    local elapsed=0
+    while (( elapsed < STOP_TIMEOUT_SECONDS )); do
+        if ! has_tmux_session "$TMUX_SESSION"; then
+            if ! port_is_open; then
+                log "Minecraft stopped cleanly; listening port is closed."
+                if [[ "$PLAYIT_STOP_WITH_SERVER" == "true" ]]; then stop_playit || warn "Playit did not stop cleanly."; fi
+                return 0
+            fi
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    die "Timed out waiting for a clean shutdown. I did not kill tmux or Java. Inspect the console: ./hagonoy attach"
+}
+
+BACKUP_RESTART_REQUIRED=false
+
+backup_exit_cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+    if [[ "$BACKUP_RESTART_REQUIRED" == true ]]; then
+        BACKUP_RESTART_REQUIRED=false
+        log "Restoring the server's previous running state after backup exit/interruption..."
+        start_server || warn "Automatic restart failed. Inspect the server and start it manually if appropriate."
+    fi
+    exit "$exit_code"
+}
+
+backup_server() {
+    require_command tmux
+    require_command ss
+    require_command tar
+    require_command df
+    require_command realpath
+    [[ -d "$MC_DIR" ]] || die "Minecraft directory does not exist: $MC_DIR"
+
+    local was_running=false
+    if has_tmux_session "$TMUX_SESSION"; then
+        was_running=true
+    elif port_is_open; then
+        die "Port $MINECRAFT_PORT is open but the managed tmux session is absent. Refusing to back up a possibly active world."
+    fi
+
+    if [[ "$was_running" == true ]]; then
+        log "Backup requires a consistent save. The manager will gracefully stop Minecraft first."
+        stop_server
+        BACKUP_RESTART_REQUIRED=true
+        trap backup_exit_cleanup EXIT INT TERM
+    fi
+
+    local mc_real backup_real
+    mc_real="$(realpath -m -- "$MC_DIR")"
+    backup_real="$(realpath -m -- "$BACKUP_DIR")"
+    case "$backup_real/" in
+        "$mc_real/"*) die "BACKUP_DIR must be outside MC_DIR to prevent the archive from including itself. Choose another disk or directory." ;;
+    esac
+
+    mkdir -p -- "$BACKUP_DIR"
+    local timestamp archive temporary
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    archive="$BACKUP_DIR/hagonoy-smp-$timestamp.tar"
+    temporary="$archive.part"
+
+    local source_bytes available_bytes required_bytes
+    source_bytes="$(du -sb -- "$MC_DIR" | awk '{print $1}')"
+    available_bytes="$(df --block-size=1 --output=avail "$BACKUP_DIR" | tail -n 1 | tr -d ' ')"
+    required_bytes=$((source_bytes + 100 * 1024 * 1024))
+    if (( available_bytes < required_bytes )); then
+        die "Not enough free space in $BACKUP_DIR. Need approximately $((required_bytes / 1024 / 1024)) MiB free; currently $((available_bytes / 1024 / 1024)) MiB. Use a separate drive or free space."
+    fi
+
+    log "Creating uncompressed backup: $archive"
+    log "This can take a while on the laptop's HDD. Server logs and crash-reports are excluded; world, plugins, mods, and configuration are included."
+    if ! tar -cf "$temporary" -C "$MC_DIR" --exclude='./logs' --exclude='./crash-reports' .; then
+        rm -f -- "$temporary"
+        die "Backup creation failed. Partial archive removed."
+    fi
+    mv -- "$temporary" "$archive"
+    log "Backup completed: $archive"
+
+    if (( BACKUP_RETENTION > 0 )); then
+        mapfile -t old_backups < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' -printf '%f\n' | sort -r | tail -n +$((BACKUP_RETENTION + 1)))
+        for old in "${old_backups[@]}"; do
+            rm -f -- "$BACKUP_DIR/$old"
+            log "Removed expired backup: $old"
+        done
+    fi
+
+    if [[ "$was_running" == true ]]; then
+        log "Restarting Minecraft because it was running before the backup..."
+        BACKUP_RESTART_REQUIRED=false
+        trap - EXIT INT TERM
+        start_server
+    fi
+}
+
+show_status() {
+    require_command tmux
+    require_command ss
+    printf 'Hagonoy SMP status\n'
+    printf '%-18s %s\n' 'Server directory:' "$MC_DIR"
+    if has_tmux_session "$TMUX_SESSION"; then
+        printf '%-18s %s\n' 'Minecraft tmux:' 'RUNNING'
+    else
+        printf '%-18s %s\n' 'Minecraft tmux:' 'STOPPED'
+    fi
+    if port_is_open; then
+        printf '%-18s %s\n' "Port $MINECRAFT_PORT:" 'LISTENING'
+    else
+        printf '%-18s %s\n' "Port $MINECRAFT_PORT:" 'CLOSED'
+    fi
+    if has_tmux_session "$PLAYIT_SESSION"; then
+        printf '%-18s %s\n' 'Playit tmux:' 'RUNNING'
+    else
+        printf '%-18s %s\n' 'Playit tmux:' 'STOPPED'
+    fi
+    if [[ -d "$MC_DIR" ]]; then
+        printf '%-18s %s\n' 'Server disk use:' "$(du -sh -- "$MC_DIR" | awk '{print $1}')"
+    else
+        printf '%-18s %s\n' 'Server disk use:' 'directory missing'
+    fi
+    printf '%-18s %s\n' 'Backup location:' "$BACKUP_DIR"
+    if [[ -d "$BACKUP_DIR" ]]; then
+        printf '%-18s %s\n' 'Backup free space:' "$(df -h --output=avail "$BACKUP_DIR" | tail -n 1 | xargs)"
+    fi
+}
+
+run_doctor() {
+    local failures=0
+    printf 'Hagonoy SMP system check\n'
+    for cmd in tmux ss tar git; do
+        if command -v "$cmd" >/dev/null 2>&1; then printf '[OK] %s found\n' "$cmd"; else printf '[MISSING] %s\n' "$cmd"; failures=$((failures + 1)); fi
+    done
+    if [[ -d "$MC_DIR" ]]; then printf '[OK] Minecraft directory: %s\n' "$MC_DIR"; else printf '[MISSING] Minecraft directory: %s\n' "$MC_DIR"; failures=$((failures + 1)); fi
+    if [[ -d "$MC_DIR" && "$START_COMMAND" == ./* && -f "$MC_DIR/${START_COMMAND#./}" && -x "$MC_DIR/${START_COMMAND#./}" ]]; then
+        printf '[OK] Start command target exists and is executable\n'
+    elif [[ "$START_COMMAND" == ./* ]]; then
+        printf '[MISSING OR NOT EXECUTABLE] Start command target: %s\n' "$MC_DIR/${START_COMMAND#./}"; failures=$((failures + 1))
+    else
+        printf '[INFO] Start command is a PATH command or shell command: %s\n' "$START_COMMAND"
+    fi
+    if [[ -d "$BACKUP_DIR" ]]; then printf '[OK] Backup directory exists: %s\n' "$BACKUP_DIR"; else printf '[INFO] Backup directory will be created when needed: %s\n' "$BACKUP_DIR"; fi
+    if command -v java >/dev/null 2>&1; then java -version 2>&1 | head -n 1; else printf '[WARNING] java not found in PATH; it may be launched by your start script.\n'; fi
+    if [[ "$PLAYIT_AUTO_START" == "true" ]]; then
+        if command -v "${PLAYIT_COMMAND%% *}" >/dev/null 2>&1; then printf '[OK] Playit command found\n'; else printf '[WARNING] Playit is enabled but command not found: %s\n' "$PLAYIT_COMMAND"; fi
+    else
+        printf '[INFO] Playit auto-start is disabled.\n'
+    fi
+    if (( failures > 0 )); then printf '\n%d check(s) need attention.\n' "$failures"; return 1; fi
+    printf '\nCore checks passed. Review Java/Playit warnings if applicable.\n'
+}
+
+show_help() {
+    cat <<'HELP'
+Hagonoy SMP Manager
+
+Usage: ./hagonoy <command>
+
+Commands:
+  start          Start Minecraft in tmux and wait for the readiness log
+  stop           Save and gracefully stop Minecraft (never force-kills it)
+  restart        Gracefully stop, then start Minecraft
+  status         Show Minecraft, port, Playit, disk and backup status
+  backup         Stop if needed, create a consistent tar backup, then restart
+  attach         Attach to the Minecraft tmux console (Ctrl+B, then d to detach)
+  playit-start   Start the Playit agent in its own tmux session
+  playit-stop    Send Ctrl+C to the Playit agent
+  doctor         Check dependencies and configured paths
+  update-manager Update this Git checkout using git pull --ff-only
+  help           Show this help
+
+Config: config/manager.conf (copy from config/manager.conf.example)
+HELP
+}
+
+update_manager() {
+    require_command git
+    git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "This directory is not a Git checkout."
+    if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then
+        die "There are uncommitted changes in the manager checkout. Commit or back them up before updating."
+    fi
+    log "Updating manager with fast-forward-only pull..."
+    git -C "$PROJECT_DIR" pull --ff-only
+}
+
+command="${1:-help}"
+if [[ "$command" == "help" || "$command" == "-h" || "$command" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+[[ -f "$CONFIG_FILE" ]] || die "Config not found: $CONFIG_FILE\nCopy config/manager.conf.example to config/manager.conf and edit it."
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+validate_config
+
+case "$command" in
+    start) start_server ;;
+    stop) stop_server ;;
+    restart) stop_server; start_server ;;
+    status) show_status ;;
+    backup) backup_server ;;
+    attach)
+        require_command tmux
+        has_tmux_session "$TMUX_SESSION" || die "Minecraft tmux session '$TMUX_SESSION' is not running."
+        exec tmux attach-session -t "$TMUX_SESSION"
+        ;;
+    playit-start) require_command tmux; start_playit ;;
+    playit-stop) require_command tmux; stop_playit ;;
+    doctor) run_doctor ;;
+    update-manager) update_manager ;;
+    help|-h|--help) show_help ;;
+    *) show_help >&2; die "Unknown command: $command" ;;
+esac
