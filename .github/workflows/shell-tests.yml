@@ -18,7 +18,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq tmux iproute2
+          sudo apt-get install -y jq tmux iproute2 python3
       - name: Check Bash syntax
         run: bash tests/syntax-check.sh
       - name: Test restore safeguards
