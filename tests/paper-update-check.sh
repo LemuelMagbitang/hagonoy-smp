@@ -162,7 +162,18 @@ PAPER_JAR="server.jar"
 PAPER_PREVIOUS_JAR_RETENTION="3"
 CONFIG
 
-    local output rc
+    local output rc check_output
+    check_output="$(env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$ROOT/hagonoy" paper-check 2>&1)"
+    grep -Fq 'Installed Paper build:       61' <<< "$check_output" || {
+        printf '[FAIL] %s scenario: installed build was not detected\n%s\n' "$name" "$check_output" >&2
+        return 1
+    }
+    grep -Fq 'Latest stable Paper build:   74' <<< "$check_output" || {
+        printf '[FAIL] %s scenario: stable build was not selected\n%s\n' "$name" "$check_output" >&2
+        return 1
+    }
+    printf '[OK] Paper check detects installed build and selects stable build only\n'
+
     if [[ "$fail_new" == "true" ]]; then
         set +e
         output="$(printf 'y\n' | env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$ROOT/hagonoy" paper-update 2>&1)"
