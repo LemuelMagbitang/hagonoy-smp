@@ -109,9 +109,9 @@ printf '[OK] Listening Minecraft port blocks restore\n'
 
 # Refuse archive member paths that attempt to escape the extraction directory.
 mkdir "$TEMP_ROOT/unsafe-source"
-printf 'outside\n' > "$TEMP_ROOT/escape.txt"
+printf 'outside\n' > "$TEMP_ROOT/unsafe-source/payload"
 UNSAFE_ARCHIVE="$BACKUP_DIR/hagonoy-smp-unsafe.tar"
-tar -P -cf "$UNSAFE_ARCHIVE" -C "$TEMP_ROOT/unsafe-source" ../escape.txt
+tar -P -cf "$UNSAFE_ARCHIVE" -C "$TEMP_ROOT/unsafe-source" --transform='s|payload|../escape.txt|' payload
 UNSAFE_DEST="$TEMP_ROOT/unsafe-server"
 if run_restore "$UNSAFE_ARCHIVE" "$UNSAFE_DEST"; then
     printf '[FAIL] Unsafe archive path was unexpectedly accepted\n' >&2
