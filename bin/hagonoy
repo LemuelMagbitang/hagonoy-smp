@@ -46,6 +46,16 @@ has_tmux_session() {
     tmux has-session -t "$1" 2>/dev/null
 }
 
+playit_system_service_active() {
+    command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet playit.service 2>/dev/null
+}
+
+playit_process_active() {
+    command -v pgrep >/dev/null 2>&1 && {
+        pgrep -x playitd >/dev/null 2>&1 || pgrep -x playit >/dev/null 2>&1
+    }
+}
+
 port_is_open() {
     ss -ltnH "sport = :$MINECRAFT_PORT" 2>/dev/null | grep -q .
 }
@@ -69,6 +79,14 @@ start_playit() {
         log "Playit session '$PLAYIT_SESSION' is already running."
         return 0
     fi
+    if playit_system_service_active; then
+        log "Playit is already running as the systemd service 'playit.service'; not starting a duplicate agent."
+        return 0
+    fi
+    if playit_process_active; then
+        log "A Playit agent process is already running outside Hagonoy; not starting a duplicate agent."
+        return 0
+    fi
     local quoted
     quoted="$(shell_quote "$PLAYIT_COMMAND")"
     log "Starting Playit in tmux session '$PLAYIT_SESSION'..."
@@ -77,6 +95,14 @@ start_playit() {
 
 stop_playit() {
     if ! has_tmux_session "$PLAYIT_SESSION"; then
+        if playit_system_service_active; then
+            warn "Playit is managed by systemd (playit.service), not Hagonoy's tmux session. This command did not stop it; use 'sudo systemctl stop playit' only when you intentionally want the agent offline."
+            return 1
+        fi
+        if playit_process_active; then
+            warn "A Playit process is running outside Hagonoy's tmux session. This command did not stop it; inspect its service or process manager."
+            return 1
+        fi
         log "Playit session '$PLAYIT_SESSION' is not running."
         return 0
     fi
@@ -410,9 +436,13 @@ show_status() {
         printf '%-18s %s\n' "Port $MINECRAFT_PORT:" 'CLOSED'
     fi
     if has_tmux_session "$PLAYIT_SESSION"; then
-        printf '%-18s %s\n' 'Playit tmux:' 'RUNNING'
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (Hagonoy tmux)'
+    elif playit_system_service_active; then
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (systemd service)'
+    elif playit_process_active; then
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (external process)'
     else
-        printf '%-18s %s\n' 'Playit tmux:' 'STOPPED'
+        printf '%-18s %s\n' 'Playit agent:' 'STOPPED'
     fi
     if [[ -d "$MC_DIR" ]]; then
         printf '%-18s %s\n' 'Server disk use:' "$(du -sh -- "$MC_DIR" | awk '{print $1}')"
@@ -445,6 +475,11 @@ run_doctor() {
         if command -v "${PLAYIT_COMMAND%% *}" >/dev/null 2>&1; then printf '[OK] Playit command found\n'; else printf '[WARNING] Playit is enabled but command not found: %s\n' "$PLAYIT_COMMAND"; fi
     else
         printf '[INFO] Playit auto-start is disabled.\n'
+    fi
+    if playit_system_service_active; then
+        printf '[OK] Playit systemd service is active.\n'
+    elif playit_process_active; then
+        printf '[INFO] A Playit process is active outside Hagonoy.\n'
     fi
     if (( failures > 0 )); then printf '\n%d check(s) need attention.\n' "$failures"; return 1; fi
     printf '\nCore checks passed. Review Java/Playit warnings if applicable.\n'
