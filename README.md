@@ -151,7 +151,7 @@ The updater accepts only stable builds and only updates within the already-insta
 
 Keep `PAPER_JAR` aligned with the JAR referenced by your configured startup script. For this server it is `server.jar`. Paper's own guidance recommends manual supervision and a working backup strategy for updates; this command always asks for approval and does not perform automatic updates.
 
-The checker/updater requires `curl`, `jq`, `sha256sum`, and the Java `jar` tool. The repository installer adds `curl` and `jq`; Java is managed separately.
+The checker/updater requires `curl`, `jq`, `sha256sum`, and Python 3. Python's standard ZIP library verifies the downloaded JAR structure without requiring a full JDK `jar` utility. The repository installer adds `curl`, `jq`, and Python 3; Java itself is managed separately.
 
 ## 9. Playit.gg (optional)
 
