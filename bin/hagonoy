@@ -627,8 +627,17 @@ paper_update() {
     log "Creating a verified pre-update backup and leaving Minecraft stopped..."
     backup_server --keep-stopped
 
-    if has_tmux_session "$TMUX_SESSION" || port_is_open; then
-        die "Minecraft is not fully stopped after backup. Refusing to replace the live JAR."
+    if has_tmux_session "$TMUX_SESSION"; then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        warn "Minecraft still has a managed tmux session after backup. The JAR was not changed; inspect the server state."
+        return 1
+    fi
+    if port_is_open; then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        warn "Minecraft port $MINECRAFT_PORT is still listening after backup. The JAR was not changed."
+        return 1
     fi
 
     if ! cp -p -- "$MC_DIR/$PAPER_JAR" "$previous_jar"; then
