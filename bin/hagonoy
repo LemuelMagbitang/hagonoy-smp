@@ -787,10 +787,10 @@ run_doctor() {
     elif playit_process_active; then
         printf '[INFO] A Playit process is active outside Hagonoy.\n'
     fi
-    if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 && command -v jar >/dev/null 2>&1; then
-        printf '[OK] Paper updater dependencies found (curl, jq, sha256sum, jar).\n'
+    if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        printf '[OK] Paper updater dependencies found (curl, jq, sha256sum, python3).\n'
     else
-        printf '[INFO] Paper updater dependencies incomplete; run ./install.sh and confirm Java's jar tool is installed.\n'
+        printf '[INFO] Paper updater dependencies incomplete; run ./install.sh or install curl, jq, and python3.\n'
     fi
     if (( failures > 0 )); then printf '\n%d check(s) need attention.\n' "$failures"; return 1; fi
     printf '\nCore checks passed. Review Java/Playit warnings if applicable.\n'
