@@ -48,7 +48,7 @@ chmod +x install.sh ./hagonoy ./bin/hagonoy ./tools/collect-host-info.sh
 ./install.sh
 ```
 
-The installer adds Git, tmux, rsync, tar, core utilities, and `ss` (from iproute2). It does **not** install Java or Playit because the correct Java version depends on the server version, and Playit should use your existing account/agent configuration.
+The installer adds Git, tmux, rsync, tar, core utilities, `ss` (from iproute2), `curl`, and `jq`. It does **not** install Java or Playit because the correct Java version depends on the server version, and Playit should use your existing account/agent configuration.
 
 ## 3. Configure the live server path
 
@@ -147,7 +147,7 @@ When you are ready to update, run:
 
 The update command requires the managed Minecraft server to be running and listening. It presents the exact Minecraft version and target Paper build, then asks for interactive confirmation. After approval it downloads to a temporary file outside the live server directory, checks the API-reported size and SHA-256, and verifies the file is a readable JAR. It then creates and structurally verifies a pre-update backup, gracefully stops Minecraft, preserves the previous JAR, replaces the configured `PAPER_JAR`, and starts the server.
 
-The updater accepts only stable builds and only updates within the already-installed Minecraft version. It does not update plugins, Geyser, Floodgate, Java, or the Minecraft version. The previous JAR is retained (three by default), and the pre-update TAR backup contains the original JAR as an additional recovery path. If the new server does not pass the configured readiness check and report the expected Paper version/build, Hagonoy attempts a graceful stop, restores the previous JAR, and starts the previous build. It never force-kills Java or replaces a JAR while the server may still be running.
+The updater accepts only stable builds and only updates within the already-installed Minecraft version. It does not update plugins, Geyser, Floodgate, Java, or the Minecraft version. After the server reports readiness, inspect the new startup log for plugin warnings; the readiness check does not prove every plugin works correctly. The previous JAR is retained (three by default), and the pre-update TAR backup contains the original JAR as an additional recovery path. If the new server does not pass the configured readiness check and report the expected Paper version/build, Hagonoy attempts a graceful stop, restores the previous JAR, and starts the previous build. It never force-kills Java or replaces a JAR while the server may still be running.
 
 Keep `PAPER_JAR` aligned with the JAR referenced by your configured startup script. For this server it is `server.jar`. Paper's own guidance recommends manual supervision and a working backup strategy for updates; this command always asks for approval and does not perform automatic updates.
 
