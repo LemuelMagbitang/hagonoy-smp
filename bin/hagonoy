@@ -15,13 +15,13 @@ READY_PATTERN="Done"
 START_TIMEOUT_SECONDS="900"
 STOP_TIMEOUT_SECONDS="180"
 BACKUP_DIR="$HOME/minecraft-backups"
-BACKUP_RETENTION="7"
+BACKUP_RETENTION="7" # Deprecated compatibility setting; no automatic deletion.
 PLAYIT_AUTO_START="false"
 PLAYIT_COMMAND="playit"
 PLAYIT_SESSION="playit-tunnel"
 PLAYIT_STOP_WITH_SERVER="false"
 PAPER_JAR="server.jar"
-PAPER_PREVIOUS_JAR_RETENTION="3"
+PAPER_PREVIOUS_JAR_RETENTION="3" # Deprecated compatibility setting; no automatic deletion.
 PAPER_USER_AGENT="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
 PAPER_STAGED_JAR=""
 
@@ -307,13 +307,7 @@ backup_server() {
     mv -- "$temporary" "$archive"
     log "Backup completed: $archive"
 
-    if (( BACKUP_RETENTION > 0 )); then
-        mapfile -t old_backups < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' -printf '%f\n' | sort -r | tail -n +$((BACKUP_RETENTION + 1)))
-        for old in "${old_backups[@]}"; do
-            rm -f -- "$BACKUP_DIR/$old"
-            log "Removed expired backup: $old"
-        done
-    fi
+    # Recovery archives are never deleted automatically.
 
     if [[ "$was_running" == true ]]; then
         BACKUP_RESTART_REQUIRED=false
@@ -684,13 +678,7 @@ PY
     if [[ "$update_started" == true ]]; then
         log "Paper update successful: Minecraft $target_version, Paper build $target_build."
         log "Inspect the new startup log for plugin warnings; readiness confirms startup, not every plugin's behavior."
-        mapfile -t previous_jars < <(find "$MC_DIR" -maxdepth 1 -type f -name "$PAPER_JAR.previous-*" -printf '%f\n' | sort -r)
-        if (( ${#previous_jars[@]} > PAPER_PREVIOUS_JAR_RETENTION )); then
-            for expired in "${previous_jars[@]:PAPER_PREVIOUS_JAR_RETENTION}"; do
-                rm -f -- "$MC_DIR/$expired"
-                log "Removed expired previous JAR: $expired"
-            done
-        fi
+        log "Previous Paper JARs are retained; Hagonoy does not prune recovery artifacts."
         return 0
     fi
 

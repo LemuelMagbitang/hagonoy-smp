@@ -24,6 +24,7 @@ STOP_TIMEOUT_SECONDS="180"
 # Backups are uncompressed tar archives to avoid extra CPU/RAM usage.
 # Prefer a separate mounted disk, for example /media/$USER/MinecraftBackups.
 BACKUP_DIR="$HOME/minecraft-backups"
+# Deprecated compatibility setting. Hagonoy never automatically deletes backups.
 BACKUP_RETENTION="7"
 
 # Playit is opt-in. Enable after confirming the agent is installed and logged in.
@@ -35,4 +36,5 @@ PLAYIT_STOP_WITH_SERVER="false"
 # Paper updater. The Minecraft version/build are detected from logs/latest.log.
 # Keep this jar name aligned with the -jar argument in your start script.
 PAPER_JAR="server.jar"
+# Deprecated compatibility setting. Previous Paper JARs are never automatically deleted.
 PAPER_PREVIOUS_JAR_RETENTION="3"
