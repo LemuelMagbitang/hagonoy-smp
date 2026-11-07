@@ -119,24 +119,28 @@ Example:
 
 Hagonoy extracts into a temporary sibling directory first. It promotes that directory to the requested destination only after extraction succeeds and the top-level `server.properties` plus configured relative startup file are present. It does **not** start the restored server. Inspect the copy before deciding to use it. Failed extractions are left in their temporary directory for inspection; they do not overwrite the requested destination.
 
-Run the restore safety tests with:
+Run the restore and Playit detection safety tests with:
 
 ```bash
 bash tests/restore-check.sh
+bash tests/playit-detection-check.sh
 ```
 
 ## 8. Playit.gg (optional)
 
-First confirm that the Playit agent works when run manually as your Ubuntu user. Then edit `config/manager.conf`:
+On Ubuntu, installing Playit through its APT package can create a systemd service named `playit.service` that runs the agent in the background. Check it with:
 
 ```bash
-PLAYIT_AUTO_START="true"
-PLAYIT_COMMAND="playit"
-PLAYIT_SESSION="playit-tunnel"
-PLAYIT_STOP_WITH_SERVER="false"
+systemctl is-active playit
+sudo systemctl status playit --no-pager
+systemctl is-enabled playit
 ```
 
-Then use:
+Hagonoy detects an active `playit.service` and reports `Playit agent: RUNNING (systemd service)`. It will not launch a duplicate tmux agent when the system service or another `playitd` process is already active.
+
+`PLAYIT_AUTO_START="false"` disables only Hagonoy's optional tmux-based auto-start. It does not stop, disable, or override the independent systemd service. The Ubuntu service may start automatically at boot if it is enabled.
+
+When no Playit service or process is active, manual Hagonoy controls are available:
 
 ```bash
 ./hagonoy playit-start
@@ -144,7 +148,9 @@ Then use:
 ./hagonoy playit-stop
 ```
 
-Do not upload Playit credentials or agent configuration. The manager only invokes the local `playit` command; it does not manage your Playit website tunnel assignments.
+`playit-stop` stops only the Playit process inside Hagonoy's tmux session. If the agent is managed by systemd, Hagonoy refuses to stop it; only use `sudo systemctl stop playit` when you deliberately want the system agent offline.
+
+Do not upload Playit credentials or agent configuration. Hagonoy does not manage website tunnel assignments or transfer tunnels between agents.
 
 ## 9. Updating the manager
 
