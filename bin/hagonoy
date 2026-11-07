@@ -256,6 +256,13 @@ backup_server() {
         rm -f -- "$temporary"
         die "Backup creation failed. Partial archive removed."
     fi
+
+    log "Verifying backup archive structure before finalizing..."
+    if ! tar -tf "$temporary" >/dev/null; then
+        rm -f -- "$temporary"
+        die "Backup archive failed structural verification. Partial archive removed."
+    fi
+
     mv -- "$temporary" "$archive"
     log "Backup completed: $archive"
 
