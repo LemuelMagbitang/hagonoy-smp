@@ -56,7 +56,15 @@ shell_quote() {
 }
 
 start_playit() {
-    [[ "$PLAYIT_AUTO_START" == "true" ]] || { log "Playit auto-start is disabled in config."; return 0; }
+    # Manual playit-start is always allowed. The config flag controls only
+    # whether Playit is launched automatically after a managed Minecraft start.
+    local trigger="${1:-manual}"
+    if [[ "$trigger" == "auto" && "$PLAYIT_AUTO_START" != "true" ]]; then
+        log "Playit auto-start is disabled in config; skipping automatic start."
+        return 0
+    fi
+    [[ "$trigger" == "auto" || "$trigger" == "manual" ]] || die "Internal error: unknown Playit start mode '$trigger'."
+
     if has_tmux_session "$PLAYIT_SESSION"; then
         log "Playit session '$PLAYIT_SESSION' is already running."
         return 0
@@ -144,7 +152,7 @@ start_server() {
 
     log "Minecraft reported ready."
     if [[ "$PLAYIT_AUTO_START" == "true" ]]; then
-        start_playit || warn "Minecraft is running, but Playit did not start successfully."
+        start_playit auto || warn "Minecraft is running, but Playit did not start successfully."
     fi
 }
 
@@ -378,7 +386,7 @@ case "$command" in
         has_tmux_session "$TMUX_SESSION" || die "Minecraft tmux session '$TMUX_SESSION' is not running."
         exec tmux attach-session -t "$TMUX_SESSION"
         ;;
-    playit-start) require_command tmux; start_playit ;;
+    playit-start) require_command tmux; start_playit manual ;;
     playit-stop) require_command tmux; stop_playit ;;
     doctor) run_doctor ;;
     update-manager) update_manager ;;
