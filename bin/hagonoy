@@ -336,6 +336,7 @@ restore_server() {
     [[ -z "$unsafe_entry" ]] || die "Archive contains an unsafe path entry: $unsafe_entry"
 
     [[ -n "$destination_input" ]] || die "Restore destination cannot be empty."
+    [[ ! -e "$destination_input" && ! -L "$destination_input" ]] || die "Restore destination already exists; nothing was overwritten: $destination_input"
     local destination_real destination_parent destination_name staging
     destination_real="$(realpath -m -- "$destination_input")" || die "Could not resolve restore destination."
     [[ "$destination_real" != "/" ]] || die "Refusing to use the filesystem root as a restore destination."
@@ -357,7 +358,7 @@ restore_server() {
     destination_name="$(basename -- "$destination_real")"
     mkdir -p -- "$destination_parent" || die "Could not create destination parent directory: $destination_parent"
     destination_real="$(realpath -m -- "$destination_parent/$destination_name")"
-    [[ ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination appeared or already exists; nothing was overwritten: $destination_real"
+    [[ ! -e "$destination_input" && ! -L "$destination_input" && ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination appeared or already exists; nothing was overwritten: $destination_input"
 
     staging="$(mktemp -d --tmpdir="$destination_parent" ".${destination_name}.hagonoy-restore.XXXXXX")" || die "Could not create a temporary restore directory."
     log "Extracting backup into temporary directory: $staging"
