@@ -101,7 +101,7 @@ The manager waits for the configured `READY_PATTERN` in newly written content in
 
 If Minecraft is running in the configured tmux session, the manager sends a save/stop sequence, creates a backup, and starts the server again. If Minecraft is listening on the configured port without the managed tmux session, backup is refused so it cannot silently archive a live world.
 
-Backups are uncompressed `.tar` files. Logs and crash reports are excluded; world folders, plugin/mod data, server settings, and other server files are included.
+Backups are uncompressed `.tar` files. Logs and crash reports are excluded; world folders, plugin/mod data, server settings, and other server files are included. Before a backup is finalized, the manager runs `tar -tf` against the temporary archive to check that its archive structure can be read. This is a structural check, not a substitute for periodically restoring a backup into a separate test directory.
 
 **Important:** `~/minecraft-backups` is on the same disk by default. This protects against mistakes but not HDD failure. For real disaster recovery, set `BACKUP_DIR` to a mounted external drive or a different machine, and periodically test restoring a backup into a separate test directory. Ensure the target disk has enough free space for another full server copy.
 
