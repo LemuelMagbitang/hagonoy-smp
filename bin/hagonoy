@@ -473,7 +473,7 @@ paper_load_stable_candidate() {
     require_command jq
     require_command sha256sum
     require_command stat
-    require_command jar
+    require_command python3
 
     paper_read_installed || return 1
     log "Checking Paper stable builds for Minecraft $PAPER_CURRENT_VERSION (same Minecraft version only)..."
@@ -617,7 +617,23 @@ paper_update() {
         PAPER_STAGED_JAR=""
         die "Downloaded JAR SHA-256 does not match PaperMC metadata. The live JAR was not changed."
     }
-    if ! jar tf "$PAPER_STAGED_JAR" >/dev/null 2>&1; then
+    if ! python3 - "$PAPER_STAGED_JAR" <<'PY'
+import sys
+import zipfile
+
+path = sys.argv[1]
+try:
+    with zipfile.ZipFile(path) as archive:
+        bad_member = archive.testzip()
+        if bad_member is not None:
+            raise ValueError(f"corrupt ZIP member: {bad_member}")
+        if "META-INF/MANIFEST.MF" not in archive.namelist():
+            raise ValueError("JAR manifest is missing")
+except Exception as exc:
+    print(f"JAR validation failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
         rm -f -- "$PAPER_STAGED_JAR"
         PAPER_STAGED_JAR=""
         die "Downloaded file is not a readable JAR archive. The live JAR was not changed."
@@ -699,7 +715,7 @@ paper_update() {
         rm -f -- "$rollback_stage"
         warn "Rollback copy failed. Previous JAR remains at $previous_jar; inspect before starting Minecraft."
         return 1
-    }
+    fi
 
     warn "Previous Paper JAR restored. Starting the previous build..."
     if ( start_server ) && paper_read_installed && [[ "$PAPER_CURRENT_VERSION" == "$target_version" && "$PAPER_CURRENT_BUILD" == "$old_build" ]]; then
