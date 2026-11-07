@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-for cmd in jq jar sha256sum tar df; do
+for cmd in jq python3 sha256sum tar df stat; do
     command -v "$cmd" >/dev/null 2>&1 || {
         printf '[SKIP] Required test dependency missing: %s\n' "$cmd"
         exit 0
@@ -77,10 +77,15 @@ chmod +x "$MOCK_BIN/curl" "$MOCK_BIN/tmux" "$MOCK_BIN/ss"
 make_jar() {
     local build="$1"
     local output="$2"
-    local dir="$TEMP_ROOT/jar-$build"
-    mkdir -p "$dir"
-    printf 'Paper test build %s\n' "$build" > "$dir/build-marker.txt"
-    jar --create --file "$output" -C "$dir" .
+    python3 - "$build" "$output" <<'PY'
+import sys
+import zipfile
+
+build, output = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n\n")
+    archive.writestr("build-marker.txt", f"Paper test build {build}\n")
+PY
 }
 
 run_scenario() {
