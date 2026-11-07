@@ -455,7 +455,7 @@ paper_read_installed() {
 
     # Fallback for Paper log lines that expose the build in the Paper version token.
     if [[ -z "$PAPER_CURRENT_BUILD" ]]; then
-        PAPER_CURRENT_BUILD="$(sed -nE 's/.*This server is running Paper version [0-9]+(\.[0-9]+)+-([0-9]+)-.*/\3/p' <<< "$paper_line")"
+        PAPER_CURRENT_BUILD="$(sed -nE 's/.*This server is running Paper version [0-9]+(\.[0-9]+)+-([0-9]+)-.*/\2/p' <<< "$paper_line")"
     fi
 
     [[ "$PAPER_CURRENT_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]] || {
@@ -760,6 +760,11 @@ run_doctor() {
         printf '[OK] Playit systemd service is active.\n'
     elif playit_process_active; then
         printf '[INFO] A Playit process is active outside Hagonoy.\n'
+    fi
+    if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 && command -v jar >/dev/null 2>&1; then
+        printf '[OK] Paper updater dependencies found (curl, jq, sha256sum, jar).\n'
+    else
+        printf '[INFO] Paper updater dependencies incomplete; run ./install.sh and confirm Java's jar tool is installed.\n'
     fi
     if (( failures > 0 )); then printf '\n%d check(s) need attention.\n' "$failures"; return 1; fi
     printf '\nCore checks passed. Review Java/Playit warnings if applicable.\n'
