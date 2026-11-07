@@ -16,7 +16,7 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 $SUDO apt-get update
-$SUDO apt-get install -y git tmux rsync tar coreutils iproute2 curl jq
+$SUDO apt-get install -y git tmux rsync tar coreutils iproute2 curl jq python3
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "$ROOT/hagonoy" "$ROOT/bin/hagonoy"
@@ -30,4 +30,4 @@ fi
 
 echo "Installation dependencies are ready. Next: edit config/manager.conf, then run ./hagonoy doctor."
 echo "Java and Playit are intentionally not installed automatically; their required versions/settings depend on your server."
-echo "curl and jq are installed for the opt-in Paper stable-build checker/updater."
+echo "curl, jq, and Python 3 are installed for the opt-in Paper stable-build checker/updater."
