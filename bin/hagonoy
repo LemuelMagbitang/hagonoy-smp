@@ -282,6 +282,117 @@ backup_server() {
     fi
 }
 
+path_is_same_or_child() {
+    local candidate="$1"
+    local parent="$2"
+    [[ "$candidate" == "$parent" || "$candidate" == "$parent/"* ]]
+}
+
+restore_server() {
+    [[ $# -eq 2 ]] || die "Usage: ./hagonoy restore <backup.tar> <new-destination-directory>"
+    require_command tmux
+    require_command ss
+    require_command tar
+    require_command realpath
+    require_command mktemp
+    require_command mv
+
+    local archive_input="$1"
+    local destination_input="$2"
+    [[ -f "$archive_input" ]] || die "Backup archive does not exist or is not a regular file: $archive_input"
+
+    local archive_real backup_real mc_real project_real
+    archive_real="$(realpath -e -- "$archive_input")" || die "Could not resolve backup archive path."
+    backup_real="$(realpath -e -- "$BACKUP_DIR")" || die "Configured backup directory does not exist: $BACKUP_DIR"
+    case "$archive_real" in
+        "$backup_real"/*) ;;
+        *) die "Restore only accepts Hagonoy backups stored inside BACKUP_DIR: $backup_real" ;;
+    esac
+    [[ "$(basename -- "$archive_real")" == hagonoy-smp-*.tar ]] || die "Archive name must match hagonoy-smp-*.tar."
+
+    if has_tmux_session "$TMUX_SESSION"; then
+        die "Minecraft tmux session '$TMUX_SESSION' is running. Stop Minecraft cleanly before restoring."
+    fi
+    if port_is_open; then
+        die "Port $MINECRAFT_PORT is listening. Refusing to restore while a Minecraft server may be active."
+    fi
+
+    log "Checking backup archive structure..."
+    tar -tf "$archive_real" >/dev/null || die "Backup archive is unreadable: $archive_real"
+
+    local entry normalized unsafe_entry=""
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        normalized="$entry"
+        while [[ "$normalized" == ./* ]]; do normalized="${normalized#./}"; done
+        [[ -z "$normalized" || "$normalized" == "." ]] && continue
+        if [[ "$normalized" == /* ]]; then
+            unsafe_entry="$entry"
+            break
+        fi
+        case "/$normalized/" in
+            */../*) unsafe_entry="$entry"; break ;;
+        esac
+    done < <(tar -tf "$archive_real")
+    [[ -z "$unsafe_entry" ]] || die "Archive contains an unsafe path entry: $unsafe_entry"
+
+    [[ -n "$destination_input" ]] || die "Restore destination cannot be empty."
+    local destination_real destination_parent destination_name staging
+    destination_real="$(realpath -m -- "$destination_input")" || die "Could not resolve restore destination."
+    [[ "$destination_real" != "/" ]] || die "Refusing to use the filesystem root as a restore destination."
+    [[ ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination already exists; nothing was overwritten: $destination_real"
+
+    mc_real="$(realpath -m -- "$MC_DIR")"
+    project_real="$(realpath -m -- "$PROJECT_DIR")"
+    if path_is_same_or_child "$destination_real" "$mc_real"; then
+        die "Restore destination must be outside the live Minecraft directory: $mc_real"
+    fi
+    if path_is_same_or_child "$destination_real" "$project_real"; then
+        die "Restore destination must be outside the Hagonoy Git checkout: $project_real"
+    fi
+    if path_is_same_or_child "$destination_real" "$backup_real"; then
+        die "Restore destination must be outside BACKUP_DIR: $backup_real"
+    fi
+
+    destination_parent="$(dirname -- "$destination_real")"
+    destination_name="$(basename -- "$destination_real")"
+    mkdir -p -- "$destination_parent" || die "Could not create destination parent directory: $destination_parent"
+    destination_real="$(realpath -m -- "$destination_parent/$destination_name")"
+    [[ ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination appeared or already exists; nothing was overwritten: $destination_real"
+
+    staging="$(mktemp -d --tmpdir="$destination_parent" ".${destination_name}.hagonoy-restore.XXXXXX")" || die "Could not create a temporary restore directory."
+    log "Extracting backup into temporary directory: $staging"
+    if ! tar -xf "$archive_real" -C "$staging" --no-same-owner; then
+        warn "Extraction failed. The partial files were left for inspection at: $staging"
+        return 1
+    fi
+
+    if [[ ! -f "$staging/server.properties" ]]; then
+        warn "The extracted archive has no top-level server.properties. It was not promoted to the requested destination."
+        warn "Inspect the extracted files at: $staging"
+        return 1
+    fi
+    if [[ "$START_COMMAND" == ./* ]]; then
+        local start_relative="${START_COMMAND#./}"
+        if [[ ! -f "$staging/$start_relative" || ! -x "$staging/$start_relative" ]]; then
+            warn "The configured startup file is missing or not executable in the restored copy: $START_COMMAND"
+            warn "Inspect the extracted files at: $staging"
+            return 1
+        fi
+    fi
+
+    if ! mv -Tn -- "$staging" "$destination_real"; then
+        warn "Could not move the verified restore into place. Temporary files remain at: $staging"
+        return 1
+    fi
+    if [[ -e "$staging" ]]; then
+        warn "The destination appeared during restore. No overwrite was performed; temporary files remain at: $staging"
+        return 1
+    fi
+
+    log "Restore completed: $destination_real"
+    log "Minecraft was not started. Inspect the restored copy before using it."
+}
+
 show_status() {
     require_command tmux
     require_command ss
@@ -350,6 +461,7 @@ Commands:
   restart        Gracefully stop, then start Minecraft
   status         Show Minecraft, port, Playit, disk and backup status
   backup         Stop if needed, create a consistent tar backup, then restart
+  restore        Restore a verified backup into a new, separate directory (server must be stopped)
   attach         Attach to the Minecraft tmux console (Ctrl+B, then d to detach)
   playit-start   Start the Playit agent in its own tmux session
   playit-stop    Send Ctrl+C to the Playit agent
@@ -388,6 +500,7 @@ case "$command" in
     restart) stop_server; start_server ;;
     status) show_status ;;
     backup) backup_server ;;
+    restore) shift; restore_server "$@" ;;
     attach)
         require_command tmux
         has_tmux_session "$TMUX_SESSION" || die "Minecraft tmux session '$TMUX_SESSION' is not running."
