@@ -1,0 +1,29 @@
+name: Hagonoy shell tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq tmux iproute2
+      - name: Check Bash syntax
+        run: bash tests/syntax-check.sh
+      - name: Test restore safeguards
+        run: bash tests/restore-check.sh
+      - name: Test Playit detection
+        run: bash tests/playit-detection-check.sh
+      - name: Test Paper updater and rollback
+        run: bash tests/paper-update-check.sh
