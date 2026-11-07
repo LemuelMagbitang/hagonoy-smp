@@ -126,7 +126,31 @@ bash tests/restore-check.sh
 bash tests/playit-detection-check.sh
 ```
 
-## 8. Playit.gg (optional)
+## 8. Paper stable-build updates
+
+The Paper updater checks the installed Paper version/build from the latest startup entry in `logs/latest.log`. It queries the official PaperMC Fill Downloads API v3 for the newest **STABLE build of that exact Minecraft version**. It never silently moves the world to a different Minecraft version.
+
+Check without changing any server files:
+
+```bash
+./hagonoy paper-check
+```
+
+When you are ready to update, run:
+
+```bash
+./hagonoy paper-update
+```
+
+The update command requires the managed Minecraft server to be running and listening. It presents the exact Minecraft version and target Paper build, then asks for interactive confirmation. After approval it downloads to a temporary file outside the live server directory, checks the API-reported size and SHA-256, and verifies the file is a readable JAR. It then creates and structurally verifies a pre-update backup, gracefully stops Minecraft, preserves the previous JAR, replaces the configured `PAPER_JAR`, and starts the server.
+
+The updater accepts only stable builds and only updates within the already-installed Minecraft version. It does not update plugins, Geyser, Floodgate, Java, or the Minecraft version. The previous JAR is retained (three by default), and the pre-update TAR backup contains the original JAR as an additional recovery path. If the new server does not pass the configured readiness check and report the expected Paper version/build, Hagonoy attempts a graceful stop, restores the previous JAR, and starts the previous build. It never force-kills Java or replaces a JAR while the server may still be running.
+
+Keep `PAPER_JAR` aligned with the JAR referenced by your configured startup script. For this server it is `server.jar`. Paper's own guidance recommends manual supervision and a working backup strategy for updates; this command always asks for approval and does not perform automatic updates.
+
+The checker/updater requires `curl`, `jq`, `sha256sum`, and the Java `jar` tool. The repository installer adds `curl` and `jq`; Java is managed separately.
+
+## 9. Playit.gg (optional)
 
 On Ubuntu, installing Playit through its APT package can create a systemd service named `playit.service` that runs the agent in the background. Check it with:
 
@@ -152,7 +176,7 @@ When no Playit service or process is active, manual Hagonoy controls are availab
 
 Do not upload Playit credentials or agent configuration. Hagonoy does not manage website tunnel assignments or transfer tunnels between agents.
 
-## 9. Updating the manager
+## 10. Updating the manager
 
 After cloning and pushing the project to GitHub, update only the manager checkout with:
 
