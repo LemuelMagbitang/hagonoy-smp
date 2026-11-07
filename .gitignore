@@ -1,0 +1,47 @@
+# Local configuration (may contain machine-specific paths)
+/config/manager.conf
+
+# Never commit actual Minecraft server data or backups
+/minecraft-server/
+/world/
+/world_nether/
+/world_the_end/
+/backups/
+*.tar
+*.tar.gz
+*.tgz
+
+# Runtime output
+*.log
+logs/
+crash-reports/
+
+# Local secrets and OS/editor files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+
+# Minecraft data and credentials if a server folder is accidentally placed here
+**/world/
+**/world_nether/
+**/world_the_end/
+**/worlds/
+**/plugins/
+**/mods/
+**/logs/
+**/crash-reports/
+**/libraries/
+**/versions/
+**/server.properties
+**/ops.json
+**/whitelist.json
+**/usercache.json
+**/banned-players.json
+**/banned-ips.json
+*.jar
+*.jks
+*.p12

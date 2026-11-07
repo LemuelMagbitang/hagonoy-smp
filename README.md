@@ -11,6 +11,25 @@ A small Bash-based management tool for running the Hagonoy Minecraft Java server
 - **Playit is optional.** The manager does not start the Playit agent until explicitly enabled in local config.
 - **No automatic Minecraft update.** Updating the server jar, mod loader, plugins, or world format is a separate, deliberate operation.
 
+## Before connecting the manager to the live server
+
+Run the read-only host diagnostic on the Ubuntu laptop before changing configuration:
+
+```bash
+chmod +x tools/collect-host-info.sh
+./tools/collect-host-info.sh
+```
+
+You can pass the existing server folder as an argument when it is not at the default path:
+
+```bash
+./tools/collect-host-info.sh "/absolute/path/to/your/server"
+```
+
+It reports Ubuntu/kernel, CPU, RAM/swap, disk and mount information, relevant command availability, tmux session names, and recognizable Minecraft server files. It does not start or stop Minecraft, alter files, or print process arguments or credentials. The output can contain usernames, filesystem labels, and mount paths, so redact anything you do not want to share.
+
+Do not run `./hagonoy start`, `stop`, or `backup` until the real server path and the exact startup command have been confirmed.
+
 ## 1. Clone the repository
 
 On the Ubuntu laptop:
@@ -20,22 +39,12 @@ git clone https://github.com/LemuelMagbitang/hagonoy-smp.git
 cd hagonoy-smp
 ```
 
-If the GitHub repository is still empty, extract this project ZIP and make its contents the first commit from the extracted project directory:
-
-```bash
-git init -b main
-git add .
-git commit -m "Initial Hagonoy SMP manager"
-git remote add origin https://github.com/LemuelMagbitang/hagonoy-smp.git
-git push -u origin main
-```
-
-If you already cloned the empty repository, copy the extracted project contents into that cloned folder instead, then run `git add .`, `git commit`, and `git push -u origin main` there. Do not create a nested `hagonoy-smp/hagonoy-smp` folder.
+The repository already contains the manager files. Clone it directly; do not initialize a replacement repository or copy the live Minecraft server into this folder.
 
 ## 2. Install basic dependencies
 
 ```bash
-chmod +x install.sh ./hagonoy ./bin/hagonoy
+chmod +x install.sh ./hagonoy ./bin/hagonoy ./tools/collect-host-info.sh
 ./install.sh
 ```
 

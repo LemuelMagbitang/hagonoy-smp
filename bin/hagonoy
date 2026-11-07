@@ -230,10 +230,13 @@ backup_server() {
     timestamp="$(date '+%Y%m%d-%H%M%S')"
     archive="$BACKUP_DIR/hagonoy-smp-$timestamp.tar"
     temporary="$archive.part"
+    [[ ! -e "$archive" && ! -e "$temporary" ]] || die "A backup with this timestamp already exists; wait a second and retry."
 
-    local source_bytes available_bytes required_bytes
+    local source_bytes available_kib available_bytes required_bytes
     source_bytes="$(du -sb -- "$MC_DIR" | awk '{print $1}')"
-    available_bytes="$(df --block-size=1 --output=avail "$BACKUP_DIR" | tail -n 1 | tr -d ' ')"
+    available_kib="$(df -Pk -- "$BACKUP_DIR" | awk 'NR == 2 { print $4 }')"
+    [[ "$available_kib" =~ ^[0-9]+$ ]] || die "Could not determine free space for backup directory: $BACKUP_DIR"
+    available_bytes=$((available_kib * 1024))
     required_bytes=$((source_bytes + 100 * 1024 * 1024))
     if (( available_bytes < required_bytes )); then
         die "Not enough free space in $BACKUP_DIR. Need approximately $((required_bytes / 1024 / 1024)) MiB free; currently $((available_bytes / 1024 / 1024)) MiB. Use a separate drive or free space."
