@@ -31,3 +31,8 @@ PLAYIT_AUTO_START="false"
 PLAYIT_COMMAND="playit"
 PLAYIT_SESSION="playit-tunnel"
 PLAYIT_STOP_WITH_SERVER="false"
+
+# Paper updater. The Minecraft version/build are detected from logs/latest.log.
+# Keep this jar name aligned with the -jar argument in your start script.
+PAPER_JAR="server.jar"
+PAPER_PREVIOUS_JAR_RETENTION="3"
