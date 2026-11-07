@@ -658,6 +658,7 @@ paper_update() {
 
     if [[ "$update_started" == true ]]; then
         log "Paper update successful: Minecraft $target_version, Paper build $target_build."
+        log "Inspect the new startup log for plugin warnings; readiness confirms startup, not every plugin's behavior."
         mapfile -t previous_jars < <(find "$MC_DIR" -maxdepth 1 -type f -name "$PAPER_JAR.previous-*" -printf '%f\n' | sort -r)
         if (( ${#previous_jars[@]} > PAPER_PREVIOUS_JAR_RETENTION )); then
             for expired in "${previous_jars[@]:PAPER_PREVIOUS_JAR_RETENTION}"; do
