@@ -105,7 +105,27 @@ Backups are uncompressed `.tar` files. Logs and crash reports are excluded; worl
 
 **Important:** `~/minecraft-backups` is on the same disk by default. This protects against mistakes but not HDD failure. For real disaster recovery, set `BACKUP_DIR` to a mounted external drive or a different machine, and periodically test restoring a backup into a separate test directory. Ensure the target disk has enough free space for another full server copy.
 
-## 7. Playit.gg (optional)
+## 7. Restore a backup safely
+
+Restore only into a **new destination directory**. The command refuses to run while the managed Minecraft tmux session exists or the configured Java port is listening. It accepts only `hagonoy-smp-*.tar` archives inside `BACKUP_DIR`, checks the archive structure and member paths, and refuses destinations that already exist or are inside the live server, Git checkout, or backup directory.
+
+Example:
+
+```bash
+./hagonoy restore \
+  "$HOME/minecraft-backups/hagonoy-smp-20261107-024756.tar" \
+  "$HOME/minecraft-restore-test/recovered-copy"
+```
+
+Hagonoy extracts into a temporary sibling directory first. It promotes that directory to the requested destination only after extraction succeeds and the top-level `server.properties` plus configured relative startup file are present. It does **not** start the restored server. Inspect the copy before deciding to use it. Failed extractions are left in their temporary directory for inspection; they do not overwrite the requested destination.
+
+Run the restore safety tests with:
+
+```bash
+bash tests/restore-check.sh
+```
+
+## 8. Playit.gg (optional)
 
 First confirm that the Playit agent works when run manually as your Ubuntu user. Then edit `config/manager.conf`:
 
@@ -126,7 +146,7 @@ Then use:
 
 Do not upload Playit credentials or agent configuration. The manager only invokes the local `playit` command; it does not manage your Playit website tunnel assignments.
 
-## 8. Updating the manager
+## 9. Updating the manager
 
 After cloning and pushing the project to GitHub, update only the manager checkout with:
 
