@@ -77,6 +77,16 @@ fi
 [[ "$(cat "$EXISTING_DEST/marker")" == "keep this file" ]]
 printf '[OK] Existing destination is refused and preserved\n'
 
+# A dangling symlink is still an existing destination and must not be followed.
+LINK_DEST="$TEMP_ROOT/dangling-restore-link"
+ln -s "$TEMP_ROOT/nonexistent-target" "$LINK_DEST"
+if run_restore "$ARCHIVE" "$LINK_DEST"; then
+    printf '[FAIL] Dangling-symlink destination was unexpectedly accepted\n' >&2
+    exit 1
+fi
+[[ -L "$LINK_DEST" ]]
+printf '[OK] Dangling-symlink destination is refused and preserved\n'
+
 # Refuse restore while the managed server session is active.
 RUNNING_DEST="$TEMP_ROOT/running-server"
 if MOCK_MINECRAFT_RUNNING=true PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$TEMP_ROOT/manager.conf" \
