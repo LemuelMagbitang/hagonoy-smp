@@ -815,7 +815,9 @@ Commands:
   windows-start   Start Windows canonical when Ubuntu is stopped
   windows-stop    Gracefully stop Windows canonical
   dual-preflight  Preview the dual-host backup source and storage requirements
-  dual-backup     Dual-vault backup operation (--plan|--execute)
+  dual-backup     Dual-host backup operation (--plan|--execute)
+  border         Plan or apply approved per-dimension world borders (--plan|--apply)
+  addons         Inventory downloaded Paper/plugins/VanillaTweaks files (--plan)
   pull           Transfer Ubuntu to Windows (--plan|--execute)
   push           Windows to Ubuntu transfer (--plan|--execute)
   ignite         Start the authoritative host
@@ -881,6 +883,18 @@ case "$command" in
         ;;
     push)
         exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
+        ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy addons --plan"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
         ;;
     paper-check)
         [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
@@ -952,8 +966,20 @@ case "$command" in
     dual-backup)
         shift
         [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Only dual-backup --plan is enabled through this interface. Execution is not yet approved."
+            die "Usage: ./hagonoy dual-backup --plan"
         exec "$PROJECT_DIR/bin/hagonoy-dual-backup" --plan
+        ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy addons --plan"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
         ;;
     pull|push|ignite|update)
         die "Dual-host command '$command' is not implemented yet. Refusing to execute."
