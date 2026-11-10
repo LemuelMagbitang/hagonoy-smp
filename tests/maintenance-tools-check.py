@@ -126,8 +126,106 @@ with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
         compatible, reason = addons["pack_metadata"](archive)
         assert compatible is False and "nested below" in reason
 
+deploy = load(ROOT / "bin" / "hagonoy-addons-deploy.py")
+
+with tempfile.TemporaryDirectory(prefix="hsmp-deploy-test-") as tmp:
+    base = Path(tmp)
+    server = base / "minecraft-server"
+    stage = base / "stage"
+    (server / "plugins").mkdir(parents=True)
+    (server / "world" / "datapacks").mkdir(parents=True)
+    disabled = server / "datapacks-disabled-26.3-test"
+    disabled.mkdir()
+    (server / "server.properties").write_text("server-port=25565\n")
+    (server / "server.jar").write_bytes(b"old paper")
+    (server / ".hagonoy-generation.json").write_text(json.dumps({
+        "schema_version": 1, "generation": 6, "generation_id": "test",
+        "state": "stopped", "host": "ubuntu",
+    }))
+    old_chunky = server / "plugins" / "Chunky-Bukkit-1.5.3.jar"
+    old_chunky.write_bytes(b"old chunky")
+    old_double = server / "world" / "datapacks" / "double shulker shells v1.3.15.zip"
+    old_double.write_bytes(b"old double shells")
+    unknown_active = server / "world" / "datapacks" / "unrelated-custom.zip"
+    unknown_active.write_bytes(b"keep this")
+    (disabled / "confetti creepers v2.2.16.zip").write_bytes(b"retire this")
+    (disabled / "double shulker shells v1.3.15.zip").write_bytes(b"old disabled pack")
+    (disabled / "unrelated-disabled.zip").write_bytes(b"keep this too")
+
+    (stage / "plugins").mkdir(parents=True)
+    (stage / "datapacks").mkdir(parents=True)
+    (stage / "server.jar").write_bytes(b"new verified paper")
+    new_chunky = b"new verified chunky"
+    (stage / "plugins" / "Chunky-Paper-1.5.66.jar").write_bytes(new_chunky)
+    new_double = b"new double shells"
+    new_painting = b"new painting picker"
+    (stage / "datapacks" / "double shulker shells v1.3.18.zip").write_bytes(new_double)
+    (stage / "datapacks" / "painting picker v1.1.5 (MC 26.3).zip").write_bytes(new_painting)
+    sha = lambda data: __import__("hashlib").sha256(data).hexdigest()
+    manifest = {
+        "source_host": "ubuntu",
+        "paper": {"sha256": sha(b"new verified paper")},
+        "plugins": [{
+            "name": "Chunky",
+            "filename": "Chunky-Paper-1.5.66.jar",
+            "sha256": sha(new_chunky),
+            "remove_files": ["Chunky-Bukkit-1.5.3.jar"],
+        }],
+        "datapacks": [
+            {"key": "double shulker shells", "filename": "double shulker shells v1.3.18.zip", "sha256": sha(new_double)},
+            {"key": "painting picker", "filename": "painting picker v1.1.5 (MC 26.3).zip", "sha256": sha(new_painting)},
+        ],
+        "known_vanilla_tweaks_keys": [
+            "double shulker shells", "confetti creepers", "painting picker"
+        ],
+        "retired_keys": ["confetti creepers"],
+    }
+    (stage / "update-manifest.json").write_text(json.dumps(manifest))
+    deploy["apply_staged_changes"](server, stage)
+
+    assert (server / "server.jar").read_bytes() == b"new verified paper"
+    assert not old_chunky.exists()
+    assert (server / "plugins" / "Chunky-Paper-1.5.66.jar").read_bytes() == new_chunky
+    assert not old_double.exists()
+    assert (server / "world" / "datapacks" / "double shulker shells v1.3.18.zip").read_bytes() == new_double
+    assert (server / "world" / "datapacks" / "painting picker v1.1.5 (MC 26.3).zip").read_bytes() == new_painting
+    assert unknown_active.read_bytes() == b"keep this"
+    assert not (disabled / "confetti creepers v2.2.16.zip").exists()
+    assert not (disabled / "double shulker shells v1.3.15.zip").exists()
+    assert (disabled / "unrelated-disabled.zip").read_bytes() == b"keep this too"
+
+    running = base / "running-server"
+    shutil = __import__("shutil")
+    shutil.copytree(server, running)
+    running_manifest = json.loads((running / ".hagonoy-generation.json").read_text())
+    running_manifest["state"] = "running"
+    (running / ".hagonoy-generation.json").write_text(json.dumps(running_manifest))
+    try:
+        deploy["apply_staged_changes"](running, stage)
+    except RuntimeError as exc:
+        assert "not STOPPED" in str(exc)
+    else:
+        raise AssertionError("A RUNNING generation accepted file replacement")
+
+with tempfile.TemporaryDirectory(prefix="hsmp-unsafe-backup-test-") as tmp:
+    archive_path = Path(tmp) / "unsafe.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        import tarfile as tar_module
+        info = tar_module.TarInfo("../escape.txt")
+        info.size = 0
+        archive.addfile(info)
+    try:
+        deploy["safe_archive_members"](archive_path)
+    except RuntimeError as exc:
+        assert "Unsafe path" in str(exc)
+    else:
+        raise AssertionError("Unsafe archive path was accepted")
+
 print("[OK] World-border targets and no-shrink policy constants")
 print("[OK] PaperMC stable-build size and SHA-256 verification")
 print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
 print("[OK] Nested datapack ZIP and 26.3 pack-format inspection")
+print("[OK] Backup-first staged deployment, old-pack retirement and unknown-pack preservation")
+print("[OK] Refuse file replacement while generation is RUNNING")
+print("[OK] Reject unsafe TAR paths before rollback extraction")
