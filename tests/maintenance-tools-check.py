@@ -69,6 +69,46 @@ with tempfile.TemporaryDirectory(prefix="hsmp-paper-test-") as tmp:
     finally:
         urllib.request.urlopen = original
 
+with tempfile.TemporaryDirectory(prefix="hsmp-plugin-test-") as tmp:
+    chunky = Path(tmp) / "Chunky-Paper-1.5.66.jar"
+    with zipfile.ZipFile(chunky, "w", zipfile.ZIP_DEFLATED) as jar:
+        jar.writestr("plugin.yml", "name: Chunky\\nversion: 1.5.66\\n")
+    digest = addons["sha256_file"](chunky)
+    original_fetch = addons["fetch_json"]
+    try:
+        addons["fetch_json"] = lambda url: [{
+            "version_type": "release",
+            "version_number": "1.5.66",
+            "date_published": "2026-11-04T00:00:00Z",
+            "files": [{
+                "filename": chunky.name,
+                "hashes": {"sha256": digest},
+            }],
+        }]
+        verified, detail = addons["official_chunky_candidate"](chunky, "1.5.66", digest)
+        assert verified and "Minecraft 26.3" in detail
+
+        for project, filename in (
+            ("geyser", "Geyser-Spigot.jar"),
+            ("floodgate", "floodgate-spigot.jar"),
+        ):
+            artifact = Path(tmp) / filename
+            artifact.write_bytes(b"publisher test artifact")
+            artifact_hash = addons["sha256_file"](artifact)
+            addons["fetch_json"] = lambda url, n=filename, h=artifact_hash: {
+                "version": "test-snapshot",
+                "builds": [{
+                    "build": 1276,
+                    "channel": "default",
+                    "promoted": True,
+                    "downloads": {"spigot": {"name": n, "sha256": h}},
+                }],
+            }
+            verified, detail = addons["official_geysermc_candidate"](project, artifact, artifact_hash)
+            assert verified and "SHA-256 verified" in detail
+    finally:
+        addons["fetch_json"] = original_fetch
+
 with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
     bundle = Path(tmp) / "VanillaTweaks_d831085_UNZIP_ME.zip"
     with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as outer:
