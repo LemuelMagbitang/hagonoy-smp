@@ -596,7 +596,7 @@ def main() -> None:
         verified, detail = official_plugin_candidate(
             label, path, str(candidate.get("version", "unknown")), candidate_hash
         )
-        print(f"    Publisher compatibility: {'VERIFIED' if verified else 'NOT VERIFIED'} — {detail}")
+        print(f"    Publisher artifact check: {'VERIFIED' if verified else 'NOT VERIFIED'} — {detail}")
 
     print()
     print("Datapack reconciliation:")
