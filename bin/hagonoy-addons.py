@@ -125,8 +125,11 @@ def pack_metadata(archive: zipfile.ZipFile) -> tuple[bool, str]:
             high = format_pair(max_format)
             return low <= TARGET_DATA_PACK_FORMAT <= high, f"format range {low}–{high}"
         if isinstance(pack_format, int):
-            return pack_format == TARGET_DATA_PACK_FORMAT[0], f"pack_format {pack_format}"
-        return False, "no recognized format range for 26.3"
+            return False, (
+                f"legacy pack_format {pack_format}; Minecraft 26.3 requires "
+                "min_format/max_format declarations"
+            )
+        return False, "min_format/max_format required for Minecraft 26.3"
     except Exception as exc:
         return False, f"invalid pack.mcmeta: {exc}"
 
@@ -307,7 +310,7 @@ def official_paper_candidate(path: Path, minecraft_version: str, build: int) -> 
     ]
     if not stable:
         return False, f"PaperMC has no stable build for Minecraft {minecraft_version}"
-    latest = stable[0]
+    latest = max(stable, key=lambda item: item["id"])
     latest_build = latest["id"]
     if build != latest_build:
         return False, f"downloaded build {build}; latest stable is {latest_build}"
