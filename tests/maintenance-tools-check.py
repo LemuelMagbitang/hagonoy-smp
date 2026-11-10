@@ -89,6 +89,15 @@ with tempfile.TemporaryDirectory(prefix="hsmp-paper-test-") as tmp:
         urllib.request.urlopen = lambda request, timeout=20: io.BytesIO(json.dumps([expected]).encode())
         verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
         assert verified and "SHA-256 verified" in detail
+        newer = {
+            "channel": "STABLE",
+            "id": 245,
+            "downloads": {"server:default": {"size": artifact.stat().st_size, "checksums": {"sha256": digest}}},
+        }
+        urllib.request.urlopen = lambda request, timeout=20: io.BytesIO(json.dumps([expected, newer]).encode())
+        verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
+        assert not verified and "latest stable is 245" in detail
+
         expected["downloads"]["server:default"]["checksums"]["sha256"] = "0" * 64
         verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
         assert not verified and "SHA-256 mismatch" in detail
@@ -114,6 +123,18 @@ with tempfile.TemporaryDirectory(prefix="hsmp-plugin-test-") as tmp:
         verified, detail = addons["official_chunky_candidate"](chunky, "1.5.66", digest)
         assert verified and "Minecraft 26.3" in detail
 
+        addons["fetch_json"] = lambda url: [{
+            "version_type": "release",
+            "version_number": "1.5.67",
+            "date_published": "2026-11-05T00:00:00Z",
+            "files": [{
+                "filename": "Chunky-Paper-1.5.67.jar",
+                "hashes": {"sha256": "f" * 64},
+            }],
+        }]
+        verified, detail = addons["official_chunky_candidate"](chunky, "1.5.66", digest)
+        assert not verified and "latest compatible Chunky release is 1.5.67" in detail
+
         for project, filename in (
             ("geyser", "Geyser-Spigot.jar"),
             ("floodgate", "floodgate-spigot.jar"),
@@ -132,6 +153,25 @@ with tempfile.TemporaryDirectory(prefix="hsmp-plugin-test-") as tmp:
             }
             verified, detail = addons["official_geysermc_candidate"](project, artifact, artifact_hash)
             assert verified and "SHA-256 verified" in detail
+            addons["fetch_json"] = lambda url, n=filename: {
+                "version": "test-snapshot",
+                "builds": [
+                    {
+                        "build": 1276,
+                        "channel": "default",
+                        "promoted": True,
+                        "downloads": {"spigot": {"name": n, "sha256": "0" * 64}},
+                    },
+                    {
+                        "build": 1277,
+                        "channel": "default",
+                        "promoted": True,
+                        "downloads": {"spigot": {"name": n, "sha256": "f" * 64}},
+                    },
+                ],
+            }
+            verified, detail = addons["official_geysermc_candidate"](project, artifact, artifact_hash)
+            assert not verified and "SHA-256 does not match publisher artifact" in detail
     finally:
         addons["fetch_json"] = original_fetch
 
@@ -334,7 +374,7 @@ else:
 print("[OK] World-border targets and no-shrink policy constants")
 print("[OK] Eight-field dual-host config NUL parser")
 print("[OK] PaperMC stable-build size and SHA-256 verification")
-print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
+print("[OK] Chunky, Geyser and Floodgate latest-build publisher metadata verification")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
 print("[OK] Nested datapack ZIP and 26.3 pack-format inspection")
 print("[OK] Backup-first staged deployment, old-pack retirement and unknown-pack preservation")
