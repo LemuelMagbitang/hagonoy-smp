@@ -10,6 +10,7 @@ import re
 import runpy
 import select
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -685,7 +686,7 @@ def other_state(a: dict[str, Any], config: tuple[str, ...], host: str) -> str:
 def run_backup_and_get_archive(windows_backup_dir: str) -> tuple[str, str]:
     plan = subprocess.run(
         [str(BACKUP_SCRIPT), "--plan"],
-        text=True, capture_output=True, check=False,
+        text=True, capture_output=True, check=False, timeout=90,
     )
     if plan.returncode:
         fail("Dual-host backup preflight failed:\n" + (plan.stderr or plan.stdout).strip())
@@ -741,7 +742,15 @@ def update_verify(a: dict[str, Any], plan: dict[str, Any], target: str, server_d
     print("[hagonoy-update] Paper/plugin/datapack post-start verification passed.")
 
 
+def _maintenance_signal(signum: int, _frame: Any) -> None:
+    name = signal.Signals(signum).name
+    raise RuntimeError(f"Received {name}; entering the safe maintenance recovery path.")
+
+
 def main() -> None:
+    signal.signal(signal.SIGINT, _maintenance_signal)
+    signal.signal(signal.SIGTERM, _maintenance_signal)
+
     if len(sys.argv) == 7 and sys.argv[1] == "--remote-apply":
         locked_apply_staged_changes(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6])
         return
