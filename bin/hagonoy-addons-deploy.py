@@ -46,10 +46,6 @@ KNOWN_VANILLA_TWEAKS = {
     "track raw statistics",
 }
 
-REMOTE_APPLY_MARKER = "__HSMP_REMOTE_APPLY__"
-REMOTE_RESTORE_MARKER = "__HSMP_REMOTE_RESTORE__"
-
-
 def fail(message: str) -> "NoReturn":
     raise RuntimeError(message)
 
@@ -199,7 +195,7 @@ def assert_runtime_stopped(host: str, session: str, port: str) -> None:
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
             text=True, capture_output=True, timeout=12, check=False,
         )
-        if probe.returncode != 0 or probe.stdout.strip().replace("\\r", "") != "STOPPED":
+        if probe.returncode != 0 or probe.stdout.strip() != "STOPPED":
             raise RuntimeError("Windows Minecraft TCP listener remains active or uncertain.")
     else:
         raise RuntimeError(f"Unsupported maintenance host: {host}")
