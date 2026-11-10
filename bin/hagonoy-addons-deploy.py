@@ -24,7 +24,6 @@ BACKUP_SCRIPT = ROOT / "bin" / "hagonoy-dual-backup"
 LIFECYCLE_UBUNTU = ROOT / "bin" / "hagonoy-dual-lifecycle"
 LIFECYCLE_WINDOWS = ROOT / "bin" / "hagonoy-dual-windows-lifecycle"
 DOWNLOADS = Path("/mnt/d/Hagonoy-SMP/server-update-downloads")
-WINDOWS_BACKUP_DIR = Path("/mnt/d/Hagonoy-SMP/server-backup")
 PRIMARY_BUNDLE = "VanillaTweaks_d831085_UNZIP_ME.zip"
 
 KNOWN_VANILLA_TWEAKS = {
@@ -232,6 +231,11 @@ def safe_archive_members(archive_path: Path) -> None:
                 parts = [part for part in name.split("/") if part not in ("", ".")]
                 if name.startswith("/") or ".." in parts:
                     raise RuntimeError(f"Unsafe path in backup archive: {member.name}")
+                if member.issym() or member.islnk():
+                    link = member.linkname.replace("\\", "/")
+                    link_parts = [part for part in link.split("/") if part not in ("", ".")]
+                    if link.startswith("/") or ".." in link_parts:
+                        raise RuntimeError(f"Unsafe link in backup archive: {member.name} -> {member.linkname}")
     except (OSError, tarfile.TarError) as exc:
         raise RuntimeError(f"Cannot validate backup archive: {exc}") from exc
 
