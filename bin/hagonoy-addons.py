@@ -37,18 +37,19 @@ def run(args: list[str], *, input_text: str | None = None, timeout: int = 30) ->
     return result.stdout.strip()
 
 
-def config_values() -> tuple[str, str, str, str, str, str]:
+def config_values() -> tuple[str, str, str, str, str, str, str, str]:
     config = ROOT / "config" / "dual-host.conf"
     if not config.is_file():
         fail(f"Missing dual-host configuration: {config}")
     code = (
         'source "$1" || exit 1; '
         'printf "%s\\0" "$WINDOWS_TMUX_SESSION" "$UBUNTU_SSH_TARGET" '
-        '"$UBUNTU_SERVER_DIR" "$WINDOWS_SERVER_DIR" "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT"'
+        '"$UBUNTU_SERVER_DIR" "$WINDOWS_SERVER_DIR" "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT" '
+        '"$WINDOWS_BACKUP_DIR" "$UBUNTU_BACKUP_DIR"'
     )
-    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\0").split("\0")
-    if len(values) != 6 or any(not value for value in values):
-        fail("Dual-host configuration is missing server or connection details.")
+    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\\0").split("\\0")
+    if len(values) != 8 or any(not value for value in values):
+        fail("Dual-host configuration is missing server, backup or connection details.")
     return tuple(values)
 
 
