@@ -203,17 +203,33 @@ if paper_jar.is_file():
         "bytes": paper_jar.stat().st_size,
         "sha256": hashlib.sha256(paper_jar.read_bytes()).hexdigest(),
     }
-datapacks = sorted(p.name for p in (server / "world" / "datapacks").glob("*.zip"))
+datapack_paths = sorted((server / "world" / "datapacks").glob("*.zip"))
+datapacks = [p.name for p in datapack_paths]
+datapack_hashes = {
+    p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+    for p in datapack_paths
+}
 legacy = []
 for d in server.glob("datapacks-disabled*"):
     if d.is_dir():
         legacy.extend(sorted(p.name for p in d.glob("*.zip")))
+plugin_errors = []
+if log.is_file():
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if re.search(
+            r"Could not load plugin|Error occurred while enabling|InvalidPluginException|Failed to load plugin",
+            line,
+            re.IGNORECASE,
+        ):
+            plugin_errors.append(line[-500:])
 print(json.dumps({
     "paper_line": paper_line,
     "paper_jar": paper_jar_info,
     "plugins": plugins,
     "datapacks": datapacks,
+    "datapack_hashes": datapack_hashes,
     "legacy_disabled_datapacks": sorted(set(legacy)),
+    "plugin_errors": plugin_errors[-30:],
 }))
 '''
     if target:
