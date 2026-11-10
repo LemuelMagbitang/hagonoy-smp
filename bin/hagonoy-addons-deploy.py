@@ -435,10 +435,10 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
             fail(f"Paper candidate build {build} is older than installed build {current[1]}.")
         if build == current[1] and candidate_hash != current_jar["sha256"]:
             fail("Paper reports the installed build number but has a different binary hash.")
+        verified, detail = a["official_paper_candidate"](path, version, build)
+        if not verified:
+            fail("Paper candidate is not the latest verified stable artifact: " + detail)
         if candidate_hash != current_jar["sha256"]:
-            verified, detail = a["official_paper_candidate"](path, version, build)
-            if not verified:
-                fail("Paper candidate is not eligible: " + detail)
             paper_update = {
                 "source": str(path),
                 "sha256": candidate_hash,
@@ -478,11 +478,13 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
             ),
             None,
         )
-        if current and current.get("sha256") == candidate_hash:
-            continue
         verified, detail = a["official_plugin_candidate"](
             label, path, str(descriptor.get("version", "unknown")), candidate_hash
         )
+        if not verified:
+            fail(f"{label} candidate is not the latest verified publisher artifact: {detail}")
+        if current and current.get("sha256") == candidate_hash:
+            continue
         if current:
             comparison = a["compare_versions"](
                 str(descriptor.get("version", "unknown")),
@@ -490,8 +492,6 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
             )
             if comparison == "candidate is older; do not downgrade":
                 fail(f"{label} candidate is older than the installed release.")
-        if not verified:
-            fail(f"{label} candidate is not the current publisher artifact: {detail}")
         old_files = [
             item["file"] for item in installed
             if str(item.get("name", "")).casefold().replace("-spigot", "") == label.casefold()
