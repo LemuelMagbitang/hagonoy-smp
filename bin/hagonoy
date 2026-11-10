@@ -817,11 +817,11 @@ Commands:
   dual-preflight  Preview the dual-host backup source and storage requirements
   dual-backup     Dual-host backup operation (--plan|--execute)
   border         Plan or apply approved per-dimension world borders (--plan|--apply)
-  addons         Inventory or apply downloaded Paper/plugins/VanillaTweaks files (--plan|--execute)\n  update         Unified server update workflow (--plan|--execute)
+  addons         Inventory or apply downloaded Paper/plugins/VanillaTweaks files (--plan|--execute)
+  update         Unified server update workflow (--plan|--execute)
   pull           Transfer Ubuntu to Windows (--plan|--execute)
   push           Windows to Ubuntu transfer (--plan|--execute)
   ignite         Start the authoritative host
-  update         Full Minecraft, Paper and plugin update (not yet implemented)
   preflight      Check both hosts and backup storage (read-only)
   help           Show this help
 
