@@ -578,24 +578,29 @@ def main() -> None:
         if not candidate:
             print(f"  {label}: downloaded JAR has no readable plugin descriptor; update blocked")
             continue
+        new_version = str(candidate.get("version", "unknown"))
+        verified, detail = official_plugin_candidate(label, path, new_version, candidate_hash)
         if current is None:
-            print(f"  {label}: {candidate.get('version', 'unknown')} found; plugin not detected as installed")
+            verdict = "new plugin candidate" if verified else "not eligible until publisher artifact is verified"
+            print(f"  {label}: {new_version} found; plugin not detected as installed — {verdict}")
         else:
             old_version = str(current.get("version", "unknown"))
-            new_version = str(candidate.get("version", "unknown"))
-            verdict = compare_versions(new_version, old_version)
+            comparison = compare_versions(new_version, old_version)
             if candidate_hash == current.get("sha256"):
                 verdict = "identical SHA-256; no update needed"
-            elif verdict == "same version":
-                verdict = "same version but different binary; hold for manual review"
+            elif comparison == "candidate is older; do not downgrade":
+                verdict = "older release; do not downgrade"
+            elif verified and comparison in {"candidate is newer", "same version"}:
+                verdict = "latest publisher artifact verified; update candidate"
+            elif comparison == "candidate is newer":
+                verdict = "newer version label but publisher artifact not verified; hold"
+            else:
+                verdict = "same version/different binary without publisher verification; hold"
             print(f"  {label}: installed {old_version}; downloaded {new_version} — {verdict}")
             print(f"    Installed JAR: {current.get('file')} ({current.get('bytes', 0):,} bytes)")
             print(f"    Download SHA-256: {candidate_hash}")
         api = candidate.get("api-version")
         print(f"    Plugin API declaration: {api or 'not declared'}")
-        verified, detail = official_plugin_candidate(
-            label, path, str(candidate.get("version", "unknown")), candidate_hash
-        )
         print(f"    Publisher artifact check: {'VERIFIED' if verified else 'NOT VERIFIED'} — {detail}")
 
     print()
