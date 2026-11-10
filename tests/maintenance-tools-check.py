@@ -231,6 +231,24 @@ with tempfile.TemporaryDirectory(prefix="hsmp-deploy-test-") as tmp:
     else:
         raise AssertionError("A RUNNING generation accepted file replacement")
 
+with tempfile.TemporaryDirectory(prefix="hsmp-rollback-hash-test-") as tmp:
+    base = Path(tmp)
+    archive_path = base / "pre-update.tar"
+    server_path = base / "server"
+    server_path.mkdir()
+    with tarfile.open(archive_path, "w") as archive:
+        info = tarfile.TarInfo("server.properties")
+        payload = b"server-port=25565\\n"
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    try:
+        deploy["restore_archive_local"](archive_path, server_path, "0" * 64)
+    except RuntimeError as exc:
+        assert "SHA-256" in str(exc)
+    else:
+        raise AssertionError("Rollback accepted a TAR with the wrong SHA-256")
+    assert not (server_path / "server.properties").exists()
+
 with tempfile.TemporaryDirectory(prefix="hsmp-unsafe-backup-test-") as tmp:
     archive_path = Path(tmp) / "unsafe.tar"
     with tarfile.open(archive_path, "w") as archive:
@@ -292,5 +310,6 @@ print("[OK] Nested datapack ZIP and 26.3 pack-format inspection")
 print("[OK] Backup-first staged deployment, old-pack retirement and unknown-pack preservation")
 print("[OK] Refuse file replacement while generation is RUNNING")
 print("[OK] Reject unsafe TAR paths before rollback extraction")
+print("[OK] Re-check rollback TAR SHA-256 before extraction")
 print("[OK] Lock/stopped-state guard for host maintenance")
 print("[OK] No-output command timeout and rollback-catchable failure propagation")
