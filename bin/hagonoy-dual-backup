@@ -29,6 +29,10 @@ esac
 : "${UBUNTU_TMUX_SESSION:?}"
 : "${MINECRAFT_PORT:?}"
 
+EXPECTED_WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/server-backup"
+[[ "$WINDOWS_BACKUP_DIR" == "$EXPECTED_WINDOWS_BACKUP_DIR" ]] ||
+    die "Windows backup path still points to a legacy location. Set WINDOWS_BACKUP_DIR to $EXPECTED_WINDOWS_BACKUP_DIR before backing up."
+
 UBUNTU_MANAGER_DIR="${UBUNTU_MANAGER_DIR:-/home/leonardodavinci/hagonoy-smp}"
 WINDOWS_START_SCRIPT="${WINDOWS_START_SCRIPT:-start-windows.sh}"
 STOP_TIMEOUT_SECONDS="${STOP_TIMEOUT_SECONDS:-180}"
