@@ -103,6 +103,10 @@ If Minecraft is running in the configured tmux session, the manager sends a save
 
 Backups are uncompressed `.tar` files. Logs and crash reports are excluded; world folders, plugin/mod data, server settings, and other server files are included. Before a backup is finalized, the manager runs `tar -tf` against the temporary archive to check that its archive structure can be read. This is a structural check, not a substitute for periodically restoring a backup into a separate test directory.
 
+For the two-host installation, use `./bin/hagonoy-dual-backup --plan` to preview a cross-host backup. The matching `--execute` operation creates one complete TAR archive from the running authoritative host, verifies it, and stores byte-identical copies in the configured Windows and Ubuntu `server-backup` directories. It gracefully stops the source server for a consistent full-directory snapshot and attempts to restart it automatically afterward; do not run it during active play.
+
+Two-host archive names record the source host, Minecraft version, Paper version/build, generation, and local timestamp. For example: `hagonoy-smp-ubuntu-mc26.3-paper26.3-244-gen6-20261110T223000+0800.tar`. The server's `.hagonoy-generation.json` is included inside the complete archive. The backup script refuses to proceed if the source generation manifest does not match the active host and running generation.
+
 Hagonoy never automatically deletes existing backup archives. The legacy `BACKUP_RETENTION` setting is accepted for configuration compatibility but does not trigger cleanup. Existing recovery archives must be reviewed and removed manually, with explicit authorization.
 
 **Important:** `~/minecraft-backups` is on the same disk by default. This protects against mistakes but not HDD failure. For real disaster recovery, set `BACKUP_DIR` to a mounted external drive or a different machine, and periodically test restoring a backup into a separate test directory. Ensure the target disk has enough free space for another full server copy.
