@@ -110,7 +110,7 @@ remote_tools_check() {
 
 load_source_metadata() {
     local python_code metadata
-    python_code='import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); g=d.get("generation"); v=(d.get("minecraft_version"), d.get("paper_version"), d.get("generation_id")); valid=d.get("schema_version")==1 and type(g) is int and g>0 and d.get("host")==sys.argv[2] and d.get("state")=="running" and all(isinstance(x,str) and x.strip() for x in v); print(str(g)+"\\t"+v[0]+"\\t"+v[1]+"\\t"+v[2]) if valid else sys.exit("invalid or mismatched generation manifest")'
+    python_code='import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); g=d.get("generation"); v=(d.get("minecraft_version"), d.get("paper_version"), d.get("generation_id")); valid=d.get("schema_version")==1 and type(g) is int and g>0 and d.get("host")==sys.argv[2] and d.get("state")=="running" and all(isinstance(x,str) and x.strip() for x in v); print(str(g)+"|"+v[0]+"|"+v[1]+"|"+v[2]) if valid else sys.exit("invalid or mismatched generation manifest")'
 
     if [[ "$SOURCE_HOST" == UBUNTU ]]; then
         metadata="$(remote "python3 -c '$python_code' '$UBUNTU_SERVER_DIR/.hagonoy-generation.json' ubuntu")" ||
@@ -120,7 +120,13 @@ load_source_metadata() {
             die "Windows generation manifest is missing, invalid, or does not describe the running Windows generation."
     fi
 
-    IFS=
+    IFS='|' read -r SOURCE_GENERATION SOURCE_MINECRAFT_VERSION SOURCE_PAPER_VERSION SOURCE_GENERATION_ID <<< "$metadata"
+    [[ "$SOURCE_GENERATION" =~ ^[1-9][0-9]*$ &&
+       -n "$SOURCE_MINECRAFT_VERSION" &&
+       -n "$SOURCE_PAPER_VERSION" &&
+       -n "$SOURCE_GENERATION_ID" ]] ||
+        die "Could not parse the source generation metadata."
+}
 
 stop_source() {
     if [[ "$SOURCE_HOST" == UBUNTU ]]; then
