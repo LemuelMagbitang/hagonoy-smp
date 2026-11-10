@@ -306,6 +306,20 @@ with tempfile.TemporaryDirectory(prefix="hsmp-lock-test-") as tmp:
     assert deploy["with_maintenance_lock"]("ubuntu", lambda: "released") == "released"
 
 try:
+    deploy["_maintenance_signal"](__import__("signal").SIGINT, None)
+except RuntimeError as exc:
+    assert "SIGINT" in str(exc) and "recovery path" in str(exc)
+else:
+    raise AssertionError("SIGINT was not routed into maintenance recovery")
+
+try:
+    deploy["_maintenance_signal"](__import__("signal").SIGTERM, None)
+except RuntimeError as exc:
+    assert "SIGTERM" in str(exc) and "recovery path" in str(exc)
+else:
+    raise AssertionError("SIGTERM was not routed into maintenance recovery")
+
+try:
     deploy["run_stream"]([__import__("sys").executable, "-c", "import time; time.sleep(0.25)"], timeout=2)
 except Exception as exc:
     raise AssertionError(f"Quiet child process should complete before timeout: {exc}")
@@ -328,3 +342,4 @@ print("[OK] Reject unsafe TAR paths before rollback extraction")
 print("[OK] Re-check rollback TAR SHA-256 before extraction")
 print("[OK] Lock/stopped-state guard for host maintenance")
 print("[OK] No-output command timeout and rollback-catchable failure propagation")
+print("[OK] SIGINT/SIGTERM route through maintenance recovery")
