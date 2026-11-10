@@ -817,7 +817,7 @@ Commands:
   dual-preflight  Preview the dual-host backup source and storage requirements
   dual-backup     Dual-host backup operation (--plan|--execute)
   border         Plan or apply approved per-dimension world borders (--plan|--apply)
-  addons         Inventory downloaded Paper/plugins/VanillaTweaks files (--plan)\n  update         Read-only update inventory (--plan; deployment not yet enabled)
+  addons         Inventory or apply downloaded Paper/plugins/VanillaTweaks files (--plan|--execute)\n  update         Unified server update workflow (--plan|--execute)
   pull           Transfer Ubuntu to Windows (--plan|--execute)
   push           Windows to Ubuntu transfer (--plan|--execute)
   ignite         Start the authoritative host
@@ -892,15 +892,21 @@ case "$command" in
         ;;
     addons)
         shift
-        [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Usage: ./hagonoy addons --plan"
-        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy addons --plan|--execute"
+        if [[ "$1" == "--plan" ]]; then
+            exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        fi
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons-deploy.py" --execute
         ;;
     update)
         shift
-        [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Full addon deployment is not enabled yet. Use './hagonoy update --plan' for the read-only update inventory."
-        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy update --plan|--execute"
+        if [[ "$1" == "--plan" ]]; then
+            exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        fi
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons-deploy.py" --execute
         ;;
     paper-check)
         [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
@@ -911,9 +917,6 @@ case "$command" in
         [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
             die "Usage: ./hagonoy paper-update --plan|--execute"
         exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
-        ;;
-    update)
-        die "Full Minecraft-version, Paper and plugin update is not implemented yet. Use paper-check or paper-update for the existing Paper-only workflow."
         ;;
     restore|attach|playit-start|playit-stop)
         die "Command '$command' is not yet integrated into the dual-host coordinator. Refusing to run against local WSL paths."
