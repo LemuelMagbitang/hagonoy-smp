@@ -505,7 +505,7 @@ def main() -> None:
         print(f"  Present only in secondary ZIP: {', '.join(only_secondary) or 'none'}")
         print("The updater will not union these bundles; this prevents re-adding packs absent from your UNZIP_ME selection.")
 
-    win_session, target, ubuntu_dir, windows_dir, ubu_session, port = config_values()
+    win_session, target, ubuntu_dir, windows_dir, ubu_session, port, _win_backup_dir, _ubu_backup_dir = config_values()
     win_state = windows_state(win_session, port)
     ubu_state = ubuntu_state(target, ubu_session, port)
     print(f"Windows canonical: {win_state}")
