@@ -30,6 +30,29 @@ assert border["WIDTH_RE"].search("The world border is currently 10000 blocks wid
 assert border["WIDTH_RE"].search("The world border is currently 10000 block wide")
 
 addons = load(ROOT / "bin" / "hagonoy-addons.py")
+with tempfile.TemporaryDirectory(prefix="hsmp-config-parse-test-") as tmp:
+    root = Path(tmp)
+    (root / "config").mkdir()
+    (root / "config" / "dual-host.conf").write_text(
+        'WINDOWS_TMUX_SESSION="mc-win"\\n'
+        'UBUNTU_SSH_TARGET="hsmp@ubuntu"\\n'
+        'UBUNTU_SERVER_DIR="/home/hsmp/minecraft-server"\\n'
+        'WINDOWS_SERVER_DIR="/mnt/d/Hagonoy-SMP/minecraft-server"\\n'
+        'UBUNTU_TMUX_SESSION="mc-ubuntu"\\n'
+        'MINECRAFT_PORT="25565"\\n'
+        'WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/server-backup"\\n'
+        'UBUNTU_BACKUP_DIR="/home/hsmp/server-backup"\\n',
+        encoding="utf-8",
+    )
+    original_root = addons["ROOT"]
+    try:
+        addons["ROOT"] = root
+        values = addons["config_values"]()
+        assert len(values) == 8
+        assert values[0] == "mc-win" and values[1] == "hsmp@ubuntu"
+        assert values[5] == "25565" and values[6].endswith("/server-backup")
+    finally:
+        addons["ROOT"] = original_root
 assert addons["pack_key"]("painting picker v1.1.5 (MC 26.3).zip") == "painting picker"
 assert addons["compare_versions"]("1.5.66", "1.5.3") == "candidate is newer"
 assert addons["compare_versions"]("1.5.3", "1.5.66") == "candidate is older; do not downgrade"
@@ -261,6 +284,7 @@ else:
     raise AssertionError("Quiet child process did not obey the no-output timeout")
 
 print("[OK] World-border targets and no-shrink policy constants")
+print("[OK] Eight-field dual-host config NUL parser")
 print("[OK] PaperMC stable-build size and SHA-256 verification")
 print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
