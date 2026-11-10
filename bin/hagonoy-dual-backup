@@ -10,13 +10,18 @@ die()  { printf '[hagonoy] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[hagonoy] WARNING: %s\n' "$*" >&2; }
 
 PLAN_ONLY=false
+KEEP_SOURCE_STOPPED=false
 if (( $# != 1 )); then
-    die "Usage: ./bin/hagonoy-dual-backup --plan|--execute"
+    die "Usage: ./bin/hagonoy-dual-backup --plan|--execute|--execute-keep-stopped"
 fi
 case "$1" in
     --plan) PLAN_ONLY=true ;;
     --execute) PLAN_ONLY=false ;;
-    *) die "Unknown argument: $1. Use --plan or --execute." ;;
+    --execute-keep-stopped)
+        PLAN_ONLY=false
+        KEEP_SOURCE_STOPPED=true
+        ;;
+    *) die "Unknown argument: $1. Use --plan, --execute, or --execute-keep-stopped." ;;
 esac
 
 : "${WINDOWS_SERVER_DIR:?}"
@@ -385,3 +390,8 @@ printf 'SHA-256: %s\n' "$WINDOWS_HASH"
 echo "Windows server-backup: VERIFIED"
 echo "Ubuntu server-backup:  VERIFIED"
 echo "One complete archive; two matching copies."
+
+if [[ "$KEEP_SOURCE_STOPPED" == true ]]; then
+    RESTART_REQUIRED=false
+    log "Verified backup complete. Source intentionally remains STOPPED for the maintenance transaction."
+fi
