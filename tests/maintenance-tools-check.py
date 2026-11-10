@@ -222,6 +222,44 @@ with tempfile.TemporaryDirectory(prefix="hsmp-unsafe-backup-test-") as tmp:
     else:
         raise AssertionError("Unsafe archive path was accepted")
 
+with tempfile.TemporaryDirectory(prefix="hsmp-lock-test-") as tmp:
+    fake_dir = Path(tmp)
+    original_run = deploy["subprocess"].run
+    seen = []
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+    def fake_run(args, **kwargs):
+        seen.append(args)
+        if args[:2] == ["tmux", "has-session"]:
+            return Result(returncode=1)
+        if args and args[0] == "ss":
+            return Result(returncode=0, stdout="")
+        raise AssertionError(f"Unexpected runtime probe: {args}")
+    try:
+        deploy["subprocess"].run = fake_run
+        deploy["assert_runtime_stopped"]("ubuntu", "mcserver", "25565")
+        try:
+            deploy["fail"]("rollback handler test")
+        except RuntimeError as exc:
+            assert "rollback handler test" in str(exc)
+        else:
+            raise AssertionError("Deployment fail() did not raise a rollback-catchable exception")
+    finally:
+        deploy["subprocess"].run = original_run
+    assert len(seen) == 2
+
+try:
+    deploy["run_stream"]([__import__("sys").executable, "-c", "import time; time.sleep(0.25)"], timeout=2)
+except Exception as exc:
+    raise AssertionError(f"Quiet child process should complete before timeout: {exc}")
+try:
+    deploy["run_stream"]([__import__("sys").executable, "-c", "import time; time.sleep(0.5)"], timeout=0.1)
+except RuntimeError as exc:
+    assert "safety timeout" in str(exc)
+else:
+    raise AssertionError("Quiet child process did not obey the no-output timeout")
+
 print("[OK] World-border targets and no-shrink policy constants")
 print("[OK] PaperMC stable-build size and SHA-256 verification")
 print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
@@ -230,3 +268,5 @@ print("[OK] Nested datapack ZIP and 26.3 pack-format inspection")
 print("[OK] Backup-first staged deployment, old-pack retirement and unknown-pack preservation")
 print("[OK] Refuse file replacement while generation is RUNNING")
 print("[OK] Reject unsafe TAR paths before rollback extraction")
+print("[OK] Lock/stopped-state guard for host maintenance")
+print("[OK] No-output command timeout and rollback-catchable failure propagation")
