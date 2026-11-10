@@ -45,3 +45,10 @@ Thumbs.db
 *.jar
 *.jks
 *.p12
+
+# Local two-host coordinator configuration
+/config/dual-host.conf
+
+# Python-generated files
+__pycache__/
+*.py[cod]

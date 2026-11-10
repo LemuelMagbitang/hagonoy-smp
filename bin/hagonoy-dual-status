@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/config/dual-host.conf"
+
+for cmd in ssh tmux powershell.exe; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo "ERROR: Missing command: $cmd" >&2
+        exit 1
+    }
+done
+
+echo "========== HAGONOY DUAL-HOST STATUS =========="
+
+# Probe Windows native listeners, including the separate staging ports.
+PS_PROBE="\$a=@(Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue).Count
+\$b=@(Get-NetUDPEndpoint -LocalPort $BEDROCK_PORT -ErrorAction SilentlyContinue).Count
+\$c=@(Get-NetTCPConnection -State Listen -LocalPort 25566 -ErrorAction SilentlyContinue).Count
+\$d=@(Get-NetUDPEndpoint -LocalPort 19133 -ErrorAction SilentlyContinue).Count
+'CANONICAL_TCP=' + \$a
+'CANONICAL_UDP=' + \$b
+'STAGING_TCP=' + \$c
+'STAGING_UDP=' + \$d"
+
+WIN="$(powershell.exe -NoProfile -NonInteractive -Command "$PS_PROBE" | tr -d '\r')"
+get_value() { printf '%s\n' "$WIN" | awk -F= -v k="$1" '$1==k {print $2}'; }
+
+WTCP="$(get_value CANONICAL_TCP)"
+WUDP="$(get_value CANONICAL_UDP)"
+STCP="$(get_value STAGING_TCP)"
+SUDP="$(get_value STAGING_UDP)"
+
+WSESSION=0
+SSESSION=0
+tmux has-session -t "$WINDOWS_TMUX_SESSION" 2>/dev/null && WSESSION=1 || true
+tmux has-session -t hagonoy-staging 2>/dev/null && SSESSION=1 || true
+
+if [[ "$WSESSION" == 1 && "$WTCP" -gt 0 ]]; then
+    WSTATE=RUNNING
+elif [[ "$WSESSION" == 0 && "$WTCP" == 0 ]]; then
+    WSTATE=STOPPED
+else
+    WSTATE=UNKNOWN
+fi
+
+if [[ "$SSESSION" == 1 && "$STCP" -gt 0 ]]; then
+    SSTATE=RUNNING
+elif [[ "$SSESSION" == 0 && "$STCP" == 0 ]]; then
+    SSTATE=STOPPED
+else
+    SSTATE=UNKNOWN
+fi
+
+echo "WINDOWS CANONICAL: $WSTATE (TCP $MINECRAFT_PORT; Bedrock UDP $WUDP)"
+echo "WINDOWS STAGING:   $SSTATE (TCP 25566; Bedrock UDP $SUDP)"
+
+REMOTE="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$UBUNTU_SSH_TARGET" "
+if tmux has-session -t '$UBUNTU_TMUX_SESSION' 2>/dev/null; then s=1; else s=0; fi
+if ss -H -ltn 'sport = :$MINECRAFT_PORT' | grep -q .; then p=1; else p=0; fi
+if ss -H -lun 'sport = :$BEDROCK_PORT' | grep -q .; then u=1; else u=0; fi
+if [ \"\$s\" = 1 ] && [ \"\$p\" = 1 ]; then state=RUNNING
+elif [ \"\$s\" = 0 ] && [ \"\$p\" = 0 ]; then state=STOPPED
+else state=UNKNOWN; fi
+printf 'STATE=%s\nJAVA_TCP=%s\nBEDROCK_UDP=%s\n' \"\$state\" \"\$p\" \"\$u\"
+")"
+
+echo "UBUNTU LIVE:       $(printf '%s\n' "$REMOTE" | awk -F= '$1=="STATE"{print $2}')"
+echo "  Java TCP:        $(printf '%s\n' "$REMOTE" | awk -F= '$1=="JAVA_TCP"{print $2}')"
+echo "  Bedrock UDP:     $(printf '%s\n' "$REMOTE" | awk -F= '$1=="BEDROCK_UDP"{print $2}')"
+
+echo "=============================================="
+echo "Read-only status check. No server state changed."

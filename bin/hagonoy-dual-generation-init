@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+
+die() {
+    printf '[hagonoy-generation-init] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ -f "$CONFIG" ]] || die "Missing dual-host configuration: $CONFIG"
+[[ -f "$HELPER" ]] || die "Missing generation helper: $HELPER"
+
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?Missing Windows server directory}"
+: "${WINDOWS_TMUX_SESSION:?Missing Windows tmux session}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu server directory}"
+: "${UBUNTU_TMUX_SESSION:?Missing Ubuntu tmux session}"
+: "${MINECRAFT_PORT:?Missing Minecraft port}"
+
+[[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+    die "Usage: ./hagonoy dual-generation-init --plan|--execute"
+
+MODE="$1"
+
+[[ "$MINECRAFT_PORT" =~ ^[0-9]+$ ]] &&
+    (( MINECRAFT_PORT >= 1 && MINECRAFT_PORT <= 65535 )) ||
+    die "Invalid Minecraft port."
+
+for cmd in ssh python3 mktemp tmux powershell.exe; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        die "Missing required command: $cmd"
+done
+
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8)
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+
+# Build a safely quoted remote Python command. The helper source itself
+# is sent over SSH stdin; no helper file is installed on the Ubuntu host.
+build_remote_command() {
+    local action="$1"
+
+    python3 - "$action" "$UBUNTU_SERVER_DIR" \
+        "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT" <<'PY'
+import shlex
+import sys
+
+action, directory, session, port = sys.argv[1:]
+
+code = (
+    'import sys; '
+    'exec(compile(sys.stdin.read(), "hagonoy-generation", "exec"))'
+)
+
+args = [
+    action,
+    directory,
+    "ubuntu",
+    "AUTO",
+    "AUTO",
+    "--session",
+    session,
+    "--port",
+    port,
+]
+
+print(
+    "python3 -c "
+    + shlex.quote(code)
+    + " "
+    + " ".join(shlex.quote(arg) for arg in args)
+)
+PY
+}
+
+run_remote_helper() {
+    local action="$1"
+    local remote_command
+
+    remote_command="$(build_remote_command "$action")" ||
+        die "Could not construct remote helper command."
+
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_command" < "$HELPER"
+}
+
+check_windows_canonical() {
+    echo "Checking Windows canonical server..."
+
+    # The Windows canonical directory must still be absent. Staging is
+    # intentionally not inspected or modified.
+    if [[ -e "$WINDOWS_SERVER_DIR" || -L "$WINDOWS_SERVER_DIR" ]]; then
+        die "Windows canonical directory already exists. Refusing initial Ubuntu adoption."
+    fi
+
+    # A local WSL tmux session with the canonical session name is not allowed.
+    if tmux has-session -t "=$WINDOWS_TMUX_SESSION" 2>/dev/null; then
+        die "Windows canonical tmux session '$WINDOWS_TMUX_SESSION' exists."
+    fi
+
+    # Also check the Windows-native TCP listener.
+    local ps_command ps_result
+    ps_command="\$count = @(Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue).Count; if (\$count -gt 0) { Write-Output 'LISTENING' } else { Write-Output 'STOPPED' }"
+
+    if ! ps_result="$(
+        powershell.exe -NoProfile -NonInteractive \
+            -Command "$ps_command" \
+            2>"$TMP_DIR/windows-powershell.err" |
+            tr -d '\r' |
+            tail -n 1
+    )"; then
+        sed -n '1,4p' "$TMP_DIR/windows-powershell.err" >&2 || true
+        die "Could not establish the Windows canonical listener state."
+    fi
+
+    [[ "$ps_result" == "STOPPED" ]] ||
+        die "Windows canonical TCP port $MINECRAFT_PORT is not confirmed stopped (reported: $ps_result)."
+
+    echo "WINDOWS_CANONICAL_DIRECTORY=ABSENT"
+    echo "WINDOWS_CANONICAL_TMUX=ABSENT"
+    echo "WINDOWS_CANONICAL_TCP=STOPPED"
+}
+
+verify_ubuntu() {
+    echo "Verifying the actual Ubuntu Minecraft process..."
+
+    local result
+    if ! result="$(run_remote_helper verify-running 2>&1)"; then
+        printf '%s\n' "$result" >&2
+        die "Ubuntu runtime verification failed. No manifest was created."
+    fi
+
+    [[ "$result" == *"RUNNING_SERVER_VERIFIED"* ]] ||
+        die "Ubuntu helper did not return its verification marker."
+
+    printf '%s\n' "$result"
+    UBUNTU_VERIFY_OUTPUT="$result"
+}
+
+verify_preconditions() {
+    check_windows_canonical
+    verify_ubuntu
+}
+
+if [[ "$MODE" == "--plan" ]]; then
+    echo "========== INITIAL GENERATION PLAN =========="
+    echo "Mode: PLAN ONLY"
+    echo "Proposed authority: UBUNTU"
+    echo "Proposed generation: 1"
+    echo "Proposed state: RUNNING"
+    echo
+
+    verify_preconditions
+
+    echo
+    echo "RESULT=READY_FOR_EXPLICIT_ADOPTION"
+    echo "No generation manifest was created or changed."
+    exit 0
+fi
+
+# Execution requires an interactive terminal and a separate exact phrase.
+[[ -t 0 && -r /dev/tty ]] ||
+    die "Execution requires an interactive terminal."
+
+echo "========== INITIAL GENERATION EXECUTION =========="
+echo "This will create one metadata file on the Ubuntu live server:"
+echo "$UBUNTU_SERVER_DIR/.hagonoy-generation.json"
+echo
+echo "It will NOT stop or restart Minecraft, copy worlds, or change Windows staging."
+echo
+
+verify_preconditions
+
+echo
+printf 'To authorize this one-time operation, type ADOPT-UBUNTU-GENERATION-1: '
+IFS= read -r confirmation < /dev/tty
+
+[[ "$confirmation" == "ADOPT-UBUNTU-GENERATION-1" ]] ||
+    die "Confirmation did not match. No manifest was created."
+
+echo
+echo "Repeating host and runtime checks immediately before adoption..."
+verify_preconditions
+
+echo
+echo "Creating Ubuntu generation 1 as RUNNING..."
+
+if ! ADOPT_OUTPUT="$(run_remote_helper adopt-running 2>&1)"; then
+    printf '%s\n' "$ADOPT_OUTPUT" >&2
+    die "Remote adoption failed. Inspect the Ubuntu manifest before retrying."
+fi
+
+printf '%s\n' "$ADOPT_OUTPUT" > "$TMP_DIR/adoption-output.txt"
+
+# Retrieve the manifest independently, then validate and compare it locally.
+MANIFEST_PATH="$UBUNTU_SERVER_DIR/.hagonoy-generation.json"
+
+REMOTE_CAT_COMMAND="$(
+    python3 - "$MANIFEST_PATH" <<'PY'
+import shlex
+import sys
+print("cat -- " + shlex.quote(sys.argv[1]))
+PY
+)" || die "Could not construct manifest read-back command."
+
+if ! REMOTE_MANIFEST="$(
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$REMOTE_CAT_COMMAND"
+)"; then
+    die "Manifest was created or may have been created, but read-back failed. Do not retry blindly; inspect Ubuntu first."
+fi
+
+mkdir -p "$TMP_DIR/ubuntu-snapshot"
+LOCAL_MANIFEST="$TMP_DIR/ubuntu-snapshot/.hagonoy-generation.json"
+printf '%s\n' "$REMOTE_MANIFEST" > "$LOCAL_MANIFEST"
+
+if ! python3 "$HELPER" show "$TMP_DIR/ubuntu-snapshot" \
+    > "$TMP_DIR/validated-manifest.json"; then
+    die "Read-back manifest failed local validation. Do not retry or alter the server."
+fi
+
+python3 - "$TMP_DIR/adoption-output.txt" "$LOCAL_MANIFEST" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1]).read_text(encoding="utf-8")
+manifest_path = Path(sys.argv[2])
+
+start = output.find("{")
+if start < 0:
+    raise SystemExit("Adoption output did not include the created JSON manifest.")
+
+created = json.loads(output[start:])
+read_back = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+if created != read_back:
+    raise SystemExit("Read-back manifest differs from the newly created manifest.")
+
+if read_back.get("generation") != 1:
+    raise SystemExit("Unexpected generation number.")
+if read_back.get("state") != "running":
+    raise SystemExit("Initial manifest is not RUNNING.")
+if read_back.get("host") != "ubuntu":
+    raise SystemExit("Initial manifest host is not ubuntu.")
+print("READBACK=VERIFIED")
+print("GENERATION=1")
+print("STATE=RUNNING")
+print("HOST=ubuntu")
+print(f"GENERATION_ID={read_back['generation_id']}")
+print(f"PAPER_VERSION={read_back['paper_version']}")
+print(f"MINECRAFT_VERSION={read_back['minecraft_version']}")
+PY
+
+echo
+echo "Generation 1 was recorded and independently verified."
+echo "No server restart, world transfer, or Windows staging change was performed."

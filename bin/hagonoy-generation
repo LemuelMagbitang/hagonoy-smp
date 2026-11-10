@@ -1,0 +1,1485 @@
+#!/usr/bin/env python3
+import argparse
+import urllib.request
+import urllib.parse
+import shutil
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+FILENAME = ".hagonoy-generation.json"
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+def fail(message):
+    raise RuntimeError(message)
+
+def load(directory):
+    directory = Path(directory)
+    if not directory.is_dir():
+        fail(f"Server directory missing: {directory}")
+    path = directory / FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        fail(f"Cannot read generation manifest: {exc}")
+
+    if not isinstance(data, dict):
+        fail("Generation manifest must contain a JSON object.")
+    schema = data.get("schema_version")
+    if (not isinstance(schema, int) or isinstance(schema, bool)
+            or schema != 1):
+        fail("Unsupported generation manifest schema.")
+    if data.get("state") not in ("running", "stopped"):
+        fail("Invalid generation state.")
+
+    generation = data.get("generation")
+    if (not isinstance(generation, int) or isinstance(generation, bool)
+            or generation < 1):
+        fail("Invalid generation number.")
+
+    generation_id = data.get("generation_id")
+    if not isinstance(generation_id, str) or not generation_id:
+        fail("Generation ID is missing or invalid.")
+
+    ancestors = data.get("ancestors")
+    if not isinstance(ancestors, list):
+        fail("Generation ancestry must be a list.")
+    if (any(not isinstance(x, str) or not x for x in ancestors)
+            or len(set(ancestors)) != len(ancestors)):
+        fail("Generation ancestry is invalid.")
+    if generation_id in ancestors:
+        fail("Generation cannot be its own ancestor.")
+    if len(ancestors) != generation - 1:
+        fail("Generation ancestry length does not match generation number.")
+
+    parent = data.get("parent_generation_id")
+    if generation == 1:
+        if parent is not None or ancestors:
+            fail("Initial generation cannot have a parent or ancestors.")
+    elif not isinstance(parent, str) or not parent or ancestors[-1] != parent:
+        fail("Parent generation ID does not match the ancestry.")
+
+    return data
+
+def save(directory, data):
+    path = Path(directory) / FILENAME
+    temp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    with temp.open("x", encoding="utf-8") as stream:
+        json.dump(data, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp, path)
+
+def show(directory):
+    data = load(directory)
+    if data is None:
+        fail("No generation manifest. This is an untracked server copy.")
+    print(json.dumps(data, indent=2))
+
+def seal(directory, host, paper, minecraft):
+    data = load(directory)
+    if data is not None:
+        if data["state"] == "running":
+            fail("Manifest says RUNNING. Refusing to seal an uncertain copy.")
+        print("Existing stopped generation retained; no changes made.")
+        show(directory)
+        return
+    stamp = now()
+    data = {
+        "schema_version": 1,
+        "generation": 1,
+        "generation_id": str(uuid.uuid4()),
+        "parent_generation_id": None,
+        "ancestors": [],
+        "state": "stopped",
+        "host": host,
+        "paper_version": paper,
+        "minecraft_version": minecraft,
+        "created_at_utc": stamp,
+        "started_at_utc": None,
+        "stopped_at_utc": stamp,
+        "updated_at_utc": stamp
+    }
+    save(directory, data)
+    print("Initial stopped generation recorded.")
+    show(directory)
+
+def run_command(command):
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False
+        )
+    except OSError as exc:
+        fail(f"Cannot execute runtime verification command: {exc}")
+
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        fail(
+            f"Runtime verification failed for {' '.join(command)}: "
+            f"{detail or 'command returned nonzero status'}"
+        )
+
+    return result.stdout.strip()
+
+
+
+def verify_running_server_windows(directory, paper, minecraft, session, port):
+    directory = Path(directory).resolve(strict=True)
+    if not directory.is_dir():
+        fail("Windows server directory is invalid.")
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        fail("Invalid Windows tmux session.")
+
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+$t = @(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue)
+$u = @(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue)
+$ids = @($t | Select-Object -ExpandProperty OwningProcess -Unique)
+$j = 0
+if ($ids.Count -eq 1) {{
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($ids[0])"
+  if ($p -and ([IO.Path]::GetFileName($p.ExecutablePath) -match '^(?i:javaw?)\\.exe$') -and ($p.CommandLine -match '(?i)server\\.jar')) {{ $j = 1 }}
+}}
+"TCP=$($t.Count)"
+"UDP=$($u.Count)"
+"PIDS=$($ids.Count)"
+"JAVA=$j"
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output=True, text=True
+    )
+    if result.returncode:
+        fail("Windows process verification failed: " + result.stderr.strip())
+
+    values = dict(
+        line.strip().split("=", 1)
+        for line in result.stdout.splitlines() if "=" in line
+    )
+    try:
+        tcp, udp, pids = (int(values[k]) for k in ("TCP", "UDP", "PIDS"))
+    except (KeyError, ValueError):
+        fail("Windows process verification returned incomplete data.")
+
+    if tcp < 1 or udp < 1 or pids != 1 or values.get("JAVA") != "1":
+        fail("Windows Java server or Bedrock listener could not be verified.")
+
+    run_command(["tmux", "has-session", "-t", f"={session}"])
+    panes = run_command([
+        "tmux", "list-panes", "-t", f"={session}",
+        "-F", "#{pane_current_path}"
+    ]).splitlines()
+
+    if not panes or any(
+        Path(x.strip()).resolve(strict=True) != directory
+        for x in panes if x.strip()
+    ):
+        fail("Windows tmux working directory does not match canonical server.")
+
+    log_path = directory / "logs" / "latest.log"
+    if not log_path.is_file():
+        fail("Windows latest.log is missing.")
+
+    mc = pr = None
+    with log_path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            m = re.search(r"Starting minecraft server version\s+(\S+)", line)
+            q = re.search(r"This server is running Paper version\s+(\S+)", line)
+            if m: mc = m.group(1)
+            if q: pr = q.group(1)
+
+    if not mc or not pr:
+        fail("Windows Minecraft/Paper versions cannot be verified.")
+    if minecraft != "AUTO" and minecraft != mc:
+        fail("Windows Minecraft version mismatch.")
+    if paper != "AUTO" and paper != pr:
+        fail("Windows Paper version mismatch.")
+
+    return {
+        "directory": str(directory),
+        "pid": "Windows",
+        "paper_version": pr,
+        "minecraft_version": mc
+    }
+
+
+def verify_running_server(
+    directory, host, paper, minecraft, session, port,
+    proc_root="/proc", require_manifest_absent=True
+):
+    if host == "windows":
+        return verify_running_server_windows(
+            directory, paper, minecraft, session, port
+        )
+    if host != "ubuntu":
+        fail(f"Unsupported runtime host: {host}")
+
+    directory = Path(directory).resolve(strict=True)
+
+    if not directory.is_dir():
+        fail("Server path is not a directory.")
+
+    manifest = directory / FILENAME
+    if require_manifest_absent and (
+        manifest.exists() or manifest.is_symlink()
+    ):
+        fail("Generation manifest already exists. Refusing adoption.")
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        fail("Invalid tmux session name.")
+
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        fail("Invalid Minecraft TCP port.")
+
+    # The configured tmux session must exist.
+    run_command(["tmux", "has-session", "-t", f"={session}"])
+
+    # Its working directory must be the canonical server directory.
+    pane_paths = run_command([
+        "tmux", "list-panes", "-t", f"={session}",
+        "-F", "#{pane_current_path}"
+    ]).splitlines()
+
+    pane_paths = [item.strip() for item in pane_paths if item.strip()]
+
+    if not pane_paths:
+        fail("Minecraft tmux session has no identifiable panes.")
+
+    try:
+        pane_directories = [
+            Path(item).resolve(strict=True) for item in pane_paths
+        ]
+    except OSError as exc:
+        fail(f"Cannot resolve a Minecraft tmux pane directory: {exc}")
+
+    mismatched = sorted({
+        str(item) for item in pane_directories if item != directory
+    })
+
+    if mismatched:
+        fail(
+            "Minecraft tmux session contains panes outside the configured "
+            "server directory: " + ", ".join(mismatched)
+        )
+
+    # Confirm that the port is listening and identify its owning process.
+    listeners = run_command([
+        "ss", "-H", "-ltnp", f"sport = :{port}"
+    ])
+
+    pids = set(re.findall(r"\bpid=(\d+)\b", listeners))
+
+    if not pids:
+        fail("Minecraft TCP port is not listening or its owning PID is unavailable.")
+
+    if len(pids) != 1:
+        fail("Multiple processes appear to own the Minecraft listening port.")
+
+    pid = next(iter(pids))
+    process = Path(proc_root) / pid
+
+    try:
+        process_cwd = Path(
+            os.readlink(process / "cwd")
+        ).resolve(strict=True)
+
+        process_exe = Path(
+            os.readlink(process / "exe")
+        ).name.removesuffix(" (deleted)")
+    except OSError as exc:
+        fail(f"Cannot verify Minecraft Java process {pid}: {exc}")
+
+    if process_exe != "java":
+        fail(f"Port {port} is owned by '{process_exe}', not Java.")
+
+    if process_cwd != directory:
+        fail(
+            "Minecraft Java process is running from an unexpected directory: "
+            f"{process_cwd}"
+        )
+
+    # Derive versions from the current server log and optionally compare
+    # them with explicitly supplied expected versions.
+    log_path = directory / "logs" / "latest.log"
+    if not log_path.is_file():
+        fail(f"Missing server log: {log_path}")
+
+    minecraft_version = None
+    paper_version = None
+
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                match = re.search(
+                    r"Starting minecraft server version\s+(\S+)", line
+                )
+                if match:
+                    minecraft_version = match.group(1)
+
+                match = re.search(
+                    r"This server is running Paper version\s+(\S+)", line
+                )
+                if match:
+                    paper_version = match.group(1)
+    except OSError as exc:
+        fail(f"Cannot read server log: {exc}")
+
+    if not minecraft_version or not paper_version:
+        fail("Could not establish both Paper and Minecraft versions from the log.")
+
+    if minecraft != "AUTO" and minecraft != minecraft_version:
+        fail(
+            f"Minecraft version mismatch: expected {minecraft}, "
+            f"found {minecraft_version}."
+        )
+
+    if paper != "AUTO" and paper != paper_version:
+        fail(
+            f"Paper version mismatch: expected {paper}, "
+            f"found {paper_version}."
+        )
+
+    return {
+        "directory": str(directory),
+        "pid": pid,
+        "paper_version": paper_version,
+        "minecraft_version": minecraft_version
+    }
+
+
+def save_new(directory, data):
+    path = Path(directory) / FILENAME
+    temp = path.with_name(
+        path.name + f".tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    )
+
+    try:
+        with temp.open("x", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        # Hard-link creation is atomic and fails if the destination exists.
+        os.link(temp, path)
+
+        directory_fd = os.open(
+            directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    except FileExistsError:
+        fail("A generation manifest appeared during adoption. Nothing overwritten.")
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def verify_running(directory, host, paper, minecraft, session, port):
+    result = verify_running_server(
+        directory, host, paper, minecraft, session, port
+    )
+
+    print("RUNNING_SERVER_VERIFIED")
+    print(f"SERVER_DIRECTORY={result['directory']}")
+    print(f"JAVA_PID={result['pid']}")
+    print(f"PAPER_VERSION={result['paper_version']}")
+    print(f"MINECRAFT_VERSION={result['minecraft_version']}")
+    print("GENERATION_MANIFEST=ABSENT")
+
+
+def adopt_running(directory, host, paper, minecraft, session, port):
+    verified = verify_running_server(
+        directory, host, paper, minecraft, session, port
+    )
+
+    stamp = now()
+    data = {
+        "schema_version": 1,
+        "generation": 1,
+        "generation_id": str(uuid.uuid4()),
+        "parent_generation_id": None,
+        "ancestors": [],
+        "state": "running",
+        "host": host,
+        "paper_version": verified["paper_version"],
+        "minecraft_version": verified["minecraft_version"],
+        "created_at_utc": stamp,
+        "started_at_utc": stamp,
+        "stopped_at_utc": None,
+        "updated_at_utc": stamp
+    }
+
+    save_new(verified["directory"], data)
+    print("Initial RUNNING generation recorded.")
+    show(verified["directory"])
+
+
+def begin(directory, host, paper, minecraft):
+    data = load(directory)
+    if data is None:
+        fail("No generation manifest. Seal the stopped server first.")
+    if data["state"] != "stopped":
+        fail("Previous generation is not marked STOPPED.")
+    parent = data["generation_id"]
+    ancestors = data.get("ancestors", []) + [parent]
+    stamp = now()
+    data.update({
+        "generation": data["generation"] + 1,
+        "generation_id": str(uuid.uuid4()),
+        "parent_generation_id": parent,
+        "ancestors": ancestors,
+        "state": "running",
+        "host": host,
+        "paper_version": paper,
+        "minecraft_version": minecraft,
+        "started_at_utc": stamp,
+        "stopped_at_utc": None,
+        "updated_at_utc": stamp
+    })
+    save(directory, data)
+    print("New running generation recorded.")
+    show(directory)
+
+
+def probe_command(command):
+    try:
+        return subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False
+        )
+    except OSError as exc:
+        fail(f"Cannot execute verification command {command[0]}: {exc}")
+
+
+def validate_lifecycle_args(directory, session, port, timeout):
+    directory = Path(directory).resolve(strict=True)
+
+    if not directory.is_dir():
+        fail("Server path is not a directory.")
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        fail("Invalid tmux session name.")
+
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        fail("Invalid Minecraft TCP port.")
+
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        fail("Timeout must be a positive integer.")
+
+    return directory
+
+
+def verify_stopped_server(directory, session, port, host="ubuntu"):
+    directory = Path(directory).resolve(strict=True)
+    data = load(directory)
+
+    if data is None:
+        fail("No generation manifest exists.")
+    if data["state"] != "stopped":
+        fail("Manifest is not STOPPED. Refusing to start another generation.")
+
+    session_result = probe_command([
+        "tmux", "has-session", "-t", f"={session}"
+    ])
+    if session_result.returncode == 0:
+        fail("Minecraft tmux session still exists.")
+    if session_result.returncode != 1:
+        fail("Could not reliably establish tmux state: " +
+             session_result.stderr.strip())
+
+    if host == "windows":
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
+            "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, check=False
+            )
+        except OSError as exc:
+            fail(f"Cannot verify Windows listeners: {exc}")
+
+        if result.returncode != 0:
+            fail("Windows listener check failed: " + result.stderr.strip())
+
+        values = dict(
+            line.strip().split("=", 1)
+            for line in result.stdout.splitlines() if "=" in line
+        )
+        try:
+            tcp_count = int(values["TCP_COUNT"])
+            udp_count = int(values["UDP_COUNT"])
+        except (KeyError, ValueError):
+            fail("Windows listener check returned incomplete data.")
+
+        if tcp_count or udp_count:
+            fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
+        return data
+
+    if host != "ubuntu":
+        fail(f"Unsupported stopped-state host: {host}")
+
+    listeners = run_command([
+        "ss", "-H", "-ltn", f"sport = :{port}"
+    ])
+    if listeners.strip():
+        fail(f"Minecraft TCP port {port} is still listening.")
+
+    return data
+
+
+def start_managed_server(directory, session, port, ready_pattern, timeout, host='ubuntu'):
+    directory = validate_lifecycle_args(
+        directory, session, port, timeout
+    )
+
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported lifecycle host: {host}")
+
+    if not isinstance(ready_pattern, str) or not ready_pattern:
+        fail("Readiness pattern cannot be empty.")
+
+    data = load(directory)
+    if data is None:
+        fail("No generation manifest. Initial adoption must be performed first.")
+
+    # Idempotent start: do not create a generation if the server is already live.
+    if data["state"] == "running":
+        runtime = verify_running_server(
+            directory, host, "AUTO", "AUTO",
+            session, port, require_manifest_absent=False
+        )
+        print("SERVER_ALREADY_RUNNING")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        print(f"JAVA_PID={runtime['pid']}")
+        return
+
+    if data["state"] != "stopped":
+        fail("Manifest state is uncertain. Refusing to start.")
+
+    verify_stopped_server(directory, session, port, host=host)
+
+    server_jar = directory / "server.jar"
+    log_path = directory / "logs" / "latest.log"
+
+    if host == "windows":
+        launcher = directory / "start.bat"
+        if not launcher.is_file():
+            fail(f"Windows batch launcher is missing: {launcher}")
+        launch_command = "cmd.exe /d /c start.bat"
+    else:
+        launcher = directory / "start.sh"
+        if not launcher.is_file() or not os.access(launcher, os.X_OK):
+            fail(f"Executable Linux launcher is missing: {launcher}")
+        launch_command = "./start.sh"
+
+    if not server_jar.is_file():
+        fail(f"Server JAR is missing: {server_jar}")
+
+    previous_size = log_path.stat().st_size if log_path.is_file() else 0
+
+    # Record the new generation BEFORE launch. If launch fails or is
+    # interrupted, the manifest remains RUNNING and blocks unsafe failover.
+    begin(
+        directory, host,
+        data.get("paper_version") or "unknown",
+        data.get("minecraft_version") or "unknown"
+    )
+
+    started_manifest = load(directory)
+    generation_id = started_manifest["generation_id"]
+    generation_number = started_manifest["generation"]
+
+    print("GENERATION_ADVANCED")
+    print(f"GENERATION={generation_number}")
+    print(f"GENERATION_ID={generation_id}")
+    print("STARTING_MINECRAFT")
+
+    # The command is a fixed executable in the verified server directory.
+    run_command([
+        "tmux", "new-session", "-d",
+        "-s", session,
+        "-c", str(directory),
+        launch_command
+    ])
+
+    started_at = time.monotonic()
+    last_report = 0
+
+    while True:
+        session_result = probe_command([
+            "tmux", "has-session", "-t", f"={session}"
+        ])
+
+        if session_result.returncode == 1:
+            fail(
+                "Minecraft session exited before readiness. "
+                "Generation remains RUNNING; inspect the server before retrying."
+            )
+        if session_result.returncode != 0:
+            fail(
+                "Could not establish startup session state: "
+                + session_result.stderr.strip()
+            )
+
+        new_log_text = ""
+        try:
+            if log_path.is_file():
+                current_size = log_path.stat().st_size
+                with log_path.open("rb") as stream:
+                    if current_size >= previous_size:
+                        stream.seek(previous_size)
+                    new_log_text = stream.read().decode(
+                        "utf-8", errors="replace"
+                    )
+        except OSError as exc:
+            fail(f"Cannot inspect startup log: {exc}")
+
+        if ready_pattern in new_log_text:
+            try:
+                runtime = verify_running_server(
+                    directory, host, "AUTO", "AUTO",
+                    session, port, require_manifest_absent=False
+                )
+            except RuntimeError as exc:
+                elapsed = int(time.monotonic() - started_at)
+                if elapsed >= timeout:
+                    fail(
+                        f"Startup log reported readiness, but runtime "
+                        f"verification did not pass within {timeout}s: "
+                        f"{exc}. Generation remains RUNNING; inspect the "
+                        "server before retrying."
+                    )
+
+                if elapsed - last_report >= 15:
+                    print(
+                        "[progress] Startup log is ready; runtime "
+                        f"verification is pending ({elapsed}s elapsed; "
+                        f"timeout {timeout}s): {exc}",
+                        flush=True
+                    )
+                    last_report = elapsed
+
+                time.sleep(3)
+                continue
+
+            current = load(directory)
+            if (
+                current is None
+                or current["state"] != "running"
+                or current["generation_id"] != generation_id
+            ):
+                fail(
+                    "Generation changed during startup. "
+                    "Runtime is ready, but manifest reconciliation is required."
+                )
+
+            current["paper_version"] = runtime["paper_version"]
+            current["minecraft_version"] = runtime["minecraft_version"]
+            current["updated_at_utc"] = now()
+            save(directory, current)
+
+            print("START=READY")
+            print(f"GENERATION={generation_number}")
+            print(f"GENERATION_ID={generation_id}")
+            print(f"JAVA_PID={runtime['pid']}")
+            print(f"PAPER_VERSION={runtime['paper_version']}")
+            print(f"MINECRAFT_VERSION={runtime['minecraft_version']}")
+            return
+
+        elapsed = int(time.monotonic() - started_at)
+        if elapsed >= timeout:
+            fail(
+                f"Startup readiness was not confirmed within {timeout}s. "
+                "Generation remains RUNNING; do not start another copy."
+            )
+
+        if elapsed - last_report >= 15:
+            print(
+                f"[progress] Minecraft startup still in progress "
+                f"({elapsed}s elapsed; timeout {timeout}s).",
+                flush=True
+            )
+            last_report = elapsed
+
+        time.sleep(3)
+
+
+def get_tmux_pane_target(session):
+    output = run_command([
+        "tmux", "list-panes", "-t", f"={session}",
+        "-F", "#{session_name}:#{window_index}.#{pane_index}"
+    ])
+
+    targets = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip()
+    ]
+
+    if len(targets) != 1:
+        fail(
+            f"Expected exactly one pane in tmux session {session!r}; "
+            f"found {len(targets)}. Refusing to send console commands."
+        )
+
+    target = targets[0]
+    prefix = f"{session}:"
+
+    if not target.startswith(prefix):
+        fail(f"Unexpected tmux pane target: {target!r}")
+
+    selector = target[len(prefix):]
+    window, separator, pane = selector.partition(".")
+
+    if (
+        separator != "."
+        or not window.isdigit()
+        or not pane.isdigit()
+    ):
+        fail(f"Malformed tmux pane target: {target!r}")
+
+    return target
+
+
+def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
+    directory = validate_lifecycle_args(
+        directory, session, port, timeout
+    )
+
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported lifecycle host: {host}")
+
+    data = load(directory)
+    if data is None:
+        fail("No generation manifest exists.")
+
+    # Idempotent stop: a verified stopped server requires no new transition.
+    if data["state"] == "stopped":
+        verify_stopped_server(directory, session, port, host=host)
+        print("SERVER_ALREADY_STOPPED")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        return
+
+    if data["state"] != "running":
+        fail("Manifest state is uncertain. Refusing automatic shutdown.")
+
+    runtime = verify_running_server(
+        directory, host, "AUTO", "AUTO",
+        session, port, require_manifest_absent=False
+    )
+
+    pane_target = get_tmux_pane_target(session)
+
+    generation_id = data["generation_id"]
+    generation_number = data["generation"]
+
+    print("SERVER_RUNTIME_VERIFIED")
+    print(f"GENERATION={generation_number}")
+    print(f"JAVA_PID={runtime['pid']}")
+    print("SAVING_WORLD")
+
+    # Preserve the established graceful shutdown sequence.
+    run_command([
+        "tmux", "send-keys", "-t", pane_target,
+        "save-all flush", "C-m"
+    ])
+    time.sleep(2)
+
+    print("REQUESTING_GRACEFUL_STOP")
+    run_command([
+        "tmux", "send-keys", "-t", pane_target,
+        "stop", "C-m"
+    ])
+
+    started_at = time.monotonic()
+    last_report = 0
+
+    while True:
+        session_result = probe_command([
+            "tmux", "has-session", "-t", f"={session}"
+        ])
+
+        if session_result.returncode not in (0, 1):
+            fail(
+                "Could not establish shutdown session state: "
+                + session_result.stderr.strip()
+            )
+
+        if host == "windows":
+            ps = (
+                "$ErrorActionPreference='Stop'; "
+                f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
+                "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+                "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+            )
+            try:
+                listener_result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive",
+                     "-Command", ps],
+                    capture_output=True, text=True, check=False
+                )
+            except OSError as exc:
+                fail(f"Cannot verify Windows listeners after stop: {exc}")
+
+            if listener_result.returncode:
+                fail("Windows listener check failed: " +
+                     listener_result.stderr.strip())
+
+            values = dict(
+                line.strip().split("=", 1)
+                for line in listener_result.stdout.splitlines()
+                if "=" in line
+            )
+            try:
+                tcp_count = int(values["TCP_COUNT"])
+                udp_count = int(values["UDP_COUNT"])
+            except (KeyError, ValueError):
+                fail("Windows listener check returned incomplete data.")
+
+            listeners_clear = tcp_count == 0 and udp_count == 0
+        else:
+            listeners = run_command([
+                "ss", "-H", "-ltn", f"sport = :{port}"
+            ])
+            listeners_clear = not listeners.strip()
+
+        if session_result.returncode == 1 and listeners_clear:
+            current = load(directory)
+
+            if (
+                current is None
+                or current["state"] != "running"
+                or current["generation_id"] != generation_id
+            ):
+                fail(
+                    "Server stopped, but generation metadata changed. "
+                    "Manual reconciliation is required."
+                )
+
+            finish(directory)
+            print("STOP=CONFIRMED")
+            print(f"GENERATION={generation_number}")
+            print(f"GENERATION_ID={generation_id}")
+            print("STATE=STOPPED")
+            return
+
+        elapsed = int(time.monotonic() - started_at)
+        if elapsed >= timeout:
+            fail(
+                f"Graceful shutdown was not confirmed within {timeout}s. "
+                "Generation remains RUNNING. No process was force-killed."
+            )
+
+        if elapsed - last_report >= 10:
+            print(
+                f"[progress] Waiting for Minecraft to save and stop "
+                f"({elapsed}s elapsed; timeout {timeout}s).",
+                flush=True
+            )
+            last_report = elapsed
+
+        time.sleep(2)
+
+
+
+def fetch_paper_stable_build(minecraft_version, user_agent):
+    if not user_agent or "\n" in user_agent or "\r" in user_agent:
+        fail("A valid Paper downloads API User-Agent is required.")
+
+    version = urllib.parse.quote(minecraft_version, safe=".")
+    url = (
+        "https://fill.papermc.io/v3/projects/paper/"
+        f"versions/{version}/builds"
+    )
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "application/json"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        fail(f"Paper stable-build lookup failed: {exc}")
+
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        fail(f"Paper downloads API error: {payload.get('message', 'unknown error')}")
+
+    if not isinstance(payload, list):
+        fail("Paper downloads API returned an unexpected response.")
+
+    stable = [
+        item for item in payload
+        if isinstance(item, dict) and item.get("channel") == "STABLE"
+    ]
+
+    if not stable:
+        fail(f"No stable Paper build is available for Minecraft {minecraft_version}.")
+
+    build = stable[0]
+    build_id = build.get("id")
+
+    if (
+        not isinstance(build_id, int)
+        or isinstance(build_id, bool)
+        or build_id < 1
+    ):
+        fail("Paper API returned an invalid stable build ID.")
+
+    download = build.get("downloads", {}).get("server:default")
+    if not isinstance(download, dict):
+        fail("Paper API response has no default server download.")
+
+    download_url = download.get("url")
+    parsed_url = urllib.parse.urlparse(download_url or "")
+
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.hostname != "fill-data.papermc.io"
+    ):
+        fail("Paper API returned an unexpected download URL.")
+
+    name = download.get("name")
+    if (
+        not isinstance(name, str)
+        or Path(name).name != name
+        or not name.endswith(".jar")
+    ):
+        fail("Paper API returned an invalid JAR filename.")
+
+    checksum = download.get("checksums", {}).get("sha256")
+    if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
+        fail("Paper API did not provide a valid SHA-256 checksum.")
+
+    size = download.get("size")
+    if (
+        not isinstance(size, int)
+        or isinstance(size, bool)
+        or size < 1
+    ):
+        fail("Paper API did not provide a valid download size.")
+
+    return {
+        "build": build_id,
+        "name": name,
+        "url": download_url,
+        "sha256": checksum.lower(),
+        "size": size
+    }
+
+
+def download_verified_paper_build(metadata, destination, user_agent):
+    request = urllib.request.Request(
+        metadata["url"],
+        headers={"User-Agent": user_agent}
+    )
+
+    digest = hashlib.sha256()
+    received = 0
+    started = time.monotonic()
+    last_report = started
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            with Path(destination).open("xb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+
+                    now_mono = time.monotonic()
+                    if now_mono - last_report >= 1:
+                        elapsed = max(now_mono - started, 0.001)
+                        percent = min(100.0, received * 100.0 / metadata["size"])
+                        speed = received / elapsed / (1024 * 1024)
+                        print(
+                            f"[download] {percent:6.2f}% "
+                            f"{received}/{metadata['size']} bytes "
+                            f"{speed:.2f} MiB/s",
+                            flush=True
+                        )
+                        last_report = now_mono
+
+                output.flush()
+                os.fsync(output.fileno())
+
+    except Exception as exc:
+        try:
+            Path(destination).unlink()
+        except FileNotFoundError:
+            pass
+        fail(f"Paper JAR download failed: {exc}")
+
+    if received != metadata["size"]:
+        Path(destination).unlink(missing_ok=True)
+        fail(
+            f"Paper download size mismatch: expected {metadata['size']}, "
+            f"received {received}."
+        )
+
+    actual_hash = digest.hexdigest()
+    if actual_hash != metadata["sha256"]:
+        Path(destination).unlink(missing_ok=True)
+        fail("Paper JAR SHA-256 verification failed.")
+
+    print(f"[download] SHA256={actual_hash}")
+    print(f"[download] VERIFIED_BYTES={received}")
+
+
+def sync_directory(directory):
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def mark_failed_start_stopped(directory, session, port, expected_generation_id):
+    session_result = probe_command([
+        "tmux", "has-session", "-t", f"={session}"
+    ])
+
+    if session_result.returncode != 1:
+        fail(
+            "Cannot prove the failed update process has stopped. "
+            "Rollback is unsafe; inspect the server manually."
+        )
+
+    listeners = run_command([
+        "ss", "-H", "-ltn", f"sport = :{port}"
+    ])
+
+    if listeners.strip():
+        fail(
+            "Minecraft still owns its listening port. "
+            "Rollback is unsafe; the process was not killed."
+        )
+
+    data = load(directory)
+    if (
+        data is None
+        or data["state"] != "running"
+        or data["generation_id"] != expected_generation_id
+    ):
+        fail("Generation metadata changed; failed-start reconciliation is unsafe.")
+
+    finish(directory)
+
+
+def update_paper_server(
+    directory, session, port, ready_pattern,
+    start_timeout, stop_timeout, user_agent, mode
+):
+    if mode not in ("plan", "execute"):
+        fail("Paper update mode must be plan or execute.")
+    directory = validate_lifecycle_args(
+        directory, session, port, start_timeout
+    )
+
+    data = load(directory)
+    if data is None or data["state"] != "running":
+        fail("Paper update requires a tracked RUNNING Ubuntu generation.")
+
+    runtime = verify_running_server(
+        directory, "ubuntu", "AUTO", "AUTO",
+        session, port, require_manifest_absent=False
+    )
+
+    minecraft_version = runtime["minecraft_version"]
+    current_paper = runtime["paper_version"]
+
+    current_match = re.match(
+        rf"^{re.escape(minecraft_version)}-(\d+)(?:-|$)",
+        current_paper
+    )
+    if not current_match:
+        fail(f"Cannot identify the installed Paper build from: {current_paper}")
+
+    current_build = int(current_match.group(1))
+
+    print("========== PAPER STABLE UPDATE CHECK ==========")
+    print(f"MINECRAFT_VERSION={minecraft_version}")
+    print(f"CURRENT_PAPER={current_paper}")
+    print(f"CURRENT_BUILD={current_build}")
+
+    metadata = fetch_paper_stable_build(minecraft_version, user_agent)
+    target_build = metadata["build"]
+
+    print(f"LATEST_STABLE_BUILD={target_build}")
+    print(f"TARGET_JAR={metadata['name']}")
+    print(f"TARGET_BYTES={metadata['size']}")
+    print(f"TARGET_SHA256={metadata['sha256']}")
+
+    if target_build == current_build:
+        print("PAPER_UPDATE=ALREADY_CURRENT")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        if mode == "plan":
+            print("RESULT=READY_FOR_PAPER_UPDATE")
+            print("PLAN_ONLY=TRUE")
+            print("No download, shutdown, JAR replacement, or restart was performed.")
+        return
+
+    if target_build < current_build:
+        fail(
+            f"Stable API build {target_build} is older than installed "
+            f"build {current_build}. Refusing downgrade."
+        )
+
+    if mode == "plan":
+        print("RESULT=READY_FOR_PAPER_UPDATE")
+        print("PLAN_ONLY=TRUE")
+        print("No download, shutdown, JAR replacement, or restart was performed.")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        return
+
+    server_jar = directory / "server.jar"
+    if not server_jar.is_file():
+        fail(f"Installed server JAR is missing: {server_jar}")
+
+    staged_jar = directory / (
+        f".hagonoy-paper-{target_build}-{uuid.uuid4().hex}.jar"
+    )
+
+    rollback_jar = directory / (
+        f"server.jar.rollback-{current_build}-"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{uuid.uuid4().hex[:8]}"
+    )
+
+    failed_jar = directory / (
+        f"server.jar.failed-{target_build}-{uuid.uuid4().hex[:8]}"
+    )
+
+    print()
+    print("========== DOWNLOAD AND VERIFY ==========")
+    print(f"TARGET={metadata['name']}")
+    print(f"EXPECTED_BYTES={metadata['size']}")
+
+    try:
+        download_verified_paper_build(
+            metadata, staged_jar, user_agent
+        )
+
+        current = load(directory)
+        if (
+            current is None
+            or current["state"] != "running"
+            or current["generation_id"] != data["generation_id"]
+        ):
+            fail("Generation changed during download. Refusing to update.")
+
+        print()
+        print("========== GRACEFUL SERVER STOP ==========")
+        stop_managed_server(
+            directory, session, port, stop_timeout
+        )
+
+        stopped = load(directory)
+        if (
+            stopped is None
+            or stopped["state"] != "stopped"
+            or stopped["generation_id"] != data["generation_id"]
+        ):
+            fail("Server stop was not reflected in the expected generation.")
+
+        # Retain the prior executable JAR as a local rollback artifact.
+        shutil.copy2(server_jar, rollback_jar)
+        with rollback_jar.open("rb") as stream:
+            os.fsync(stream.fileno())
+
+        print(f"ROLLBACK_JAR={rollback_jar}")
+
+        os.replace(staged_jar, server_jar)
+        sync_directory(directory)
+
+        print()
+        print("========== START UPDATED PAPER ==========")
+
+        try:
+            start_managed_server(
+                directory, session, port,
+                ready_pattern, start_timeout
+            )
+
+            updated = load(directory)
+            if updated is None:
+                fail("Updated server did not retain a generation manifest.")
+
+            updated_match = re.match(
+                rf"^{re.escape(minecraft_version)}-(\d+)(?:-|$)",
+                updated.get("paper_version", "")
+            )
+
+            if (
+                updated["state"] != "running"
+                or updated_match is None
+                or int(updated_match.group(1)) != target_build
+            ):
+                fail(
+                    "Minecraft started, but the live Paper build does not "
+                    "match the requested stable update."
+                )
+
+            print("PAPER_UPDATE=SUCCESS")
+            print(f"PAPER_BUILD={target_build}")
+            print(f"GENERATION={updated['generation']}")
+            print(f"GENERATION_ID={updated['generation_id']}")
+            print(f"ROLLBACK_JAR={rollback_jar}")
+            return
+
+        except Exception as start_error:
+            print(
+                f"[hagonoy-generation] Updated build did not confirm readiness: "
+                f"{start_error}",
+                file=sys.stderr
+            )
+
+            failed_generation = load(directory)
+            if failed_generation is None or failed_generation["state"] != "running":
+                fail(
+                    "Update startup failed and generation state is unexpected. "
+                    f"Previous JAR retained at {rollback_jar}."
+                )
+
+            mark_failed_start_stopped(
+                directory, session, port,
+                failed_generation["generation_id"]
+            )
+
+            # Preserve the failed new JAR, then restore the previous build.
+            if server_jar.exists():
+                os.replace(server_jar, failed_jar)
+
+            restore_temp = directory / (
+                f".hagonoy-restore-{uuid.uuid4().hex}.jar"
+            )
+            shutil.copy2(rollback_jar, restore_temp)
+            os.replace(restore_temp, server_jar)
+            sync_directory(directory)
+
+            print(f"FAILED_UPDATE_JAR={failed_jar}")
+            print(f"RESTORED_ROLLBACK_JAR={rollback_jar}")
+            print("RESTARTING_PREVIOUS_PAPER_BUILD")
+
+            try:
+                start_managed_server(
+                    directory, session, port,
+                    ready_pattern, start_timeout
+                )
+            except Exception as rollback_error:
+                fail(
+                    "Paper update failed. Previous JAR was restored, but "
+                    "its restart did not confirm readiness: "
+                    f"{rollback_error}. Inspect the server; do not force-kill."
+                )
+
+            fail(
+                "Paper update failed. Previous build was restored and "
+                "Minecraft restarted successfully."
+            )
+
+    finally:
+        try:
+            staged_jar.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def finish(directory):
+    data = load(directory)
+    if data is None:
+        fail("No generation manifest exists.")
+    if data["state"] == "stopped":
+        print("Generation is already stopped; no changes made.")
+        show(directory)
+        return
+    stamp = now()
+    data["state"] = "stopped"
+    data["stopped_at_utc"] = stamp
+    data["updated_at_utc"] = stamp
+    save(directory, data)
+    print("Generation marked STOPPED.")
+    show(directory)
+
+def select(ubuntu, windows):
+    paths = {"UBUNTU": Path(ubuntu), "WINDOWS": Path(windows)}
+    existing = {k: p.is_dir() for k, p in paths.items()}
+
+    if not any(existing.values()):
+        fail("Neither canonical server directory exists.")
+
+    manifests = {}
+    for host, path in paths.items():
+        if not existing[host]:
+            continue
+        data = load(path)
+        if data is None:
+            fail(f"{host} exists but has no generation manifest. Authority is unknown.")
+        if data["state"] != "stopped":
+            fail(f"{host} generation is RUNNING. Resolve this before ignition.")
+        manifests[host] = data
+
+    if len(manifests) == 1:
+        winner = next(iter(manifests))
+        print(f"WINNER={winner}")
+        return
+
+    u, w = manifests["UBUNTU"], manifests["WINDOWS"]
+    if u["generation"] > w["generation"]:
+        if w["generation_id"] not in u.get("ancestors", []):
+            fail("Ubuntu has a higher number but does not prove descent from Windows. Generation conflict.")
+        print("WINNER=UBUNTU")
+    elif w["generation"] > u["generation"]:
+        if u["generation_id"] not in w.get("ancestors", []):
+            fail("Windows has a higher number but does not prove descent from Ubuntu. Generation conflict.")
+        print("WINNER=WINDOWS")
+    elif u["generation_id"] == w["generation_id"]:
+        print("EQUAL=SHARED_GENERATION")
+        print("Both manifests identify the same generation lineage point.")
+        print("This does NOT prove server files are byte-for-byte identical.")
+        print("Explicit host selection and integrity verification are required.")
+    else:
+        fail("Generation conflict: equal numbers but different generation IDs.")
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="action", required=True)
+
+    s = sub.add_parser("show")
+    s.add_argument("directory")
+
+    for action in ("seal", "begin", "adopt-running", "verify-running"):
+        s = sub.add_parser(action)
+        s.add_argument("directory")
+        s.add_argument("host", choices=("ubuntu", "windows"))
+        s.add_argument("paper_version")
+        s.add_argument("minecraft_version")
+        if action in ("adopt-running", "verify-running"):
+            s.add_argument("--session", default="mcserver")
+            s.add_argument("--port", type=int, default=25565)
+
+    s = sub.add_parser("start-server")
+    s.add_argument("directory")
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--ready-pattern", default="Done")
+    s.add_argument("--timeout", type=int, default=900)
+    s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
+
+    s = sub.add_parser("stop-server")
+    s.add_argument("directory")
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--timeout", type=int, default=180)
+    s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
+
+    s = sub.add_parser("paper-update")
+    s.add_argument("directory")
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--ready-pattern", default="Done")
+    s.add_argument("--start-timeout", type=int, default=900)
+    s.add_argument("--stop-timeout", type=int, default=180)
+    paper_mode = s.add_mutually_exclusive_group(required=True)
+    paper_mode.add_argument("--plan", dest="mode", action="store_const", const="plan")
+    paper_mode.add_argument("--execute", dest="mode", action="store_const", const="execute")
+    s.add_argument(
+        "--user-agent",
+        default="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
+    )
+
+    s = sub.add_parser("finish")
+    s.add_argument("directory")
+
+    s = sub.add_parser("select")
+    s.add_argument("ubuntu_directory")
+    s.add_argument("windows_directory")
+
+    args = parser.parse_args()
+    if args.action == "show":
+        show(args.directory)
+    elif args.action == "seal":
+        seal(args.directory, args.host, args.paper_version, args.minecraft_version)
+    elif args.action == "adopt-running":
+        adopt_running(
+            args.directory, args.host, args.paper_version,
+            args.minecraft_version, args.session, args.port
+        )
+    elif args.action == "verify-running":
+        verify_running(
+            args.directory, args.host, args.paper_version,
+            args.minecraft_version, args.session, args.port
+        )
+    elif args.action == "begin":
+        begin(args.directory, args.host, args.paper_version, args.minecraft_version)
+    elif args.action == "start-server":
+        start_managed_server(
+            args.directory, args.session, args.port,
+            args.ready_pattern, args.timeout, args.host
+        )
+    elif args.action == "stop-server":
+        stop_managed_server(
+            args.directory, args.session, args.port, args.timeout,
+            args.host
+        )
+    elif args.action == "paper-update":
+        update_paper_server(
+            args.directory, args.session, args.port,
+            args.ready_pattern, args.start_timeout,
+            args.stop_timeout, args.user_agent, args.mode
+        )
+    elif args.action == "finish":
+        finish(args.directory)
+    elif args.action == "select":
+        select(args.ubuntu_directory, args.windows_directory)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"[hagonoy-generation] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

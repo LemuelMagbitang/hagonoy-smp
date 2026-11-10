@@ -791,22 +791,39 @@ Hagonoy SMP Manager
 Usage: ./hagonoy <command>
 
 Commands:
-  start          Start Minecraft in tmux and wait for the readiness log
-  stop           Save and gracefully stop Minecraft (never force-kills it)
-  restart        Gracefully stop, then start Minecraft
-  status         Show Minecraft, port, Playit, disk and backup status
-  backup         Stop if needed, create a consistent tar backup, then restart
+  start          Start the authoritative Ubuntu server
+  stop           Gracefully stop the authoritative Ubuntu server
+  restart        Gracefully restart the authoritative Ubuntu server
+  status         Show both hosts, ports and server states
+  backup         Manage dual-vault backups (--plan|--execute)
   restore        Restore a verified backup into a new, separate directory (server must be stopped)
   paper-check    Check the installed Paper build against stable builds for the same Minecraft version
-  paper-update   Interactively update Paper with a verified backup and rollback attempt
+  paper-update   Update Paper within the installed Minecraft version (--plan|--execute)
   attach         Attach to the Minecraft tmux console (Ctrl+B, then d to detach)
   playit-start   Start the Playit agent in its own tmux session
   playit-stop    Send Ctrl+C to the Playit agent
-  doctor         Check dependencies and configured paths
+  doctor         Run dual-host preflight checks
   update-manager Update this Git checkout using git pull --ff-only
+  dual-status    Show Ubuntu live, Windows canonical and staging status
+  dual-generation Inspect and compare canonical generation manifests (read-only)
+  dual-generation-init Establish Ubuntu generation 1 (--plan or explicitly confirmed --execute)
+  dual-start      Start or verify the authoritative Ubuntu server
+  dual-stop       Gracefully stop Ubuntu and verify its generation manifest
+  dual-update     Update Ubuntu Paper safely (--plan or explicitly confirmed --execute)
+  dual-pull       Synchronize Ubuntu to Windows (--plan|--execute|--handoff)
+  dual-push       Synchronize Windows to Ubuntu (--plan|--execute)
+  windows-start   Start Windows canonical when Ubuntu is stopped
+  windows-stop    Gracefully stop Windows canonical
+  dual-preflight  Preview the dual-host backup source and storage requirements
+  dual-backup     Dual-vault backup operation (--plan|--execute)
+  pull           Transfer Ubuntu to Windows (--plan|--execute)
+  push           Windows to Ubuntu transfer (--plan|--execute)
+  ignite         Start the authoritative host
+  update         Full Minecraft, Paper and plugin update (not yet implemented)
+  preflight      Check both hosts and backup storage (read-only)
   help           Show this help
 
-Config: config/manager.conf (copy from config/manager.conf.example)
+WSL coordinator: config/dual-host.conf | Single-host: config/manager.conf
 HELP
 }
 
@@ -825,6 +842,123 @@ if [[ "$command" == "help" || "$command" == "-h" || "$command" == "--help" ]]; t
     show_help
     exit 0
 fi
+
+
+# Unified everyday commands: active only in the WSL coordinator checkout.
+# The physical Ubuntu checkout has no dual-host config and keeps local controls.
+if [[ -f "$PROJECT_DIR/config/dual-host.conf" ]]; then
+case "$command" in
+    status)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy status"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-status"
+        ;;
+    start|ignite)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy ignite"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        ;;
+    restart)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy restart"
+        "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    preflight|doctor)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy preflight"
+        exec "$PROJECT_DIR/bin/hagonoy-dual"
+        ;;
+    backup)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy backup --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-backup" "$1"
+        ;;
+    pull)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-pull" "$@"
+        ;;
+    push)
+        exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
+        ;;
+    paper-check)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update --plan
+        ;;
+    paper-update)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy paper-update --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
+        ;;
+    update)
+        die "Full Minecraft-version, Paper and plugin update is not implemented yet. Use paper-check or paper-update for the existing Paper-only workflow."
+        ;;
+    restore|attach|playit-start|playit-stop)
+        die "Command '$command' is not yet integrated into the dual-host coordinator. Refusing to run against local WSL paths."
+        ;;
+esac
+fi
+
+# DUAL-HOST COORDINATOR ROUTER
+# Existing explicit dual-* commands remain supported.
+case "$command" in
+    dual-status)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-status"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-status"
+        ;;
+    dual-generation)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-generation"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-generation"
+        ;;
+    dual-generation-init)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-generation-init" "$@"
+        ;;
+    dual-start)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-start"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    windows-start)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy windows-start"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-windows-lifecycle" start
+        ;;
+    windows-stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy windows-stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-windows-lifecycle" stop
+        ;;
+    dual-stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        ;;
+    dual-update)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy dual-update --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
+        ;;
+    dual-push)
+        exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
+        ;;
+    dual-pull)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-pull" "$@"
+        ;;
+    dual-preflight)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-preflight"
+        exec "$PROJECT_DIR/bin/hagonoy-dual"
+        ;;
+    dual-backup)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Only dual-backup --plan is enabled through this interface. Execution is not yet approved."
+        exec "$PROJECT_DIR/bin/hagonoy-dual-backup" --plan
+        ;;
+    pull|push|ignite|update)
+        die "Dual-host command '$command' is not implemented yet. Refusing to execute."
+        ;;
+esac
 
 [[ -f "$CONFIG_FILE" ]] || die "Config not found: $CONFIG_FILE\nCopy config/manager.conf.example to config/manager.conf and edit it."
 # shellcheck source=/dev/null

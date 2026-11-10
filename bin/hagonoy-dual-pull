@@ -1,0 +1,521 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+ROUTER="$ROOT/bin/hagonoy"
+
+die() {
+    printf '[hagonoy-pull] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf '[hagonoy-pull] WARNING: %s\n' "$*" >&2
+}
+
+[[ -f "$CONFIG" && -f "$HELPER" && -x "$ROUTER" ]] ||
+    die "Missing configuration, generation helper, or manager router."
+
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?Missing Windows canonical directory}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu server directory}"
+: "${WINDOWS_TMUX_SESSION:?Missing Windows tmux session}"
+: "${MINECRAFT_PORT:?Missing Minecraft port}"
+: "${BEDROCK_PORT:?Missing Bedrock port}"
+
+[[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" || "$1" == "--handoff" ) ]] ||
+    die "Usage: ./hagonoy dual-pull --plan|--execute|--handoff"
+
+MODE="$1"
+
+for cmd in ssh rsync python3 tmux powershell.exe df du mktemp; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        die "Missing required command: $cmd"
+done
+
+SSH=(ssh -T -o BatchMode=yes -o ConnectTimeout=8)
+
+PARENT="$(dirname -- "$WINDOWS_SERVER_DIR")"
+[[ -d "$PARENT" ]] || die "Windows destination parent is missing: $PARENT"
+
+WORK_ROOT=""
+SOURCE_STOPPED=0
+SOURCE_RESTART_ATTEMPTED=0
+PROMOTED=0
+KEEP_UBUNTU_STOPPED=0
+HANDOFF_SUCCEEDED=0
+
+cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM
+
+    if (( SOURCE_STOPPED == 1 && SOURCE_RESTART_ATTEMPTED == 0 )); then
+        if (( KEEP_UBUNTU_STOPPED == 1 )); then
+            if (( HANDOFF_SUCCEEDED == 1 )); then
+                log "Ubuntu remains STOPPED by design; Windows is the active host."
+            else
+                warn "Windows startup was attempted. Ubuntu remains STOPPED to prevent split-brain. Inspect both hosts before recovery."
+            fi
+        else
+            SOURCE_RESTART_ATTEMPTED=1
+            echo
+            echo "========== RESTORE UBUNTU PRIMARY =========="
+            echo "Pull ended before Windows startup was attempted."
+            if "$ROUTER" dual-start; then
+                SOURCE_STOPPED=0
+                echo "[OK] Ubuntu primary restarted."
+            else
+                warn "Ubuntu restart did not confirm. Inspect its session, ports, and manifest before retrying."
+            fi
+        fi
+    fi
+
+    if [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]]; then
+        if (( PROMOTED == 1 )); then
+            rm -rf -- "$WORK_ROOT"
+        else
+            warn "Unpromoted incoming copy retained for inspection at: $WORK_ROOT"
+        fi
+    fi
+
+    exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+check_windows_stopped() {
+    echo "========== WINDOWS CANONICAL SAFETY CHECK =========="
+
+    if tmux has-session -t "=$WINDOWS_TMUX_SESSION" 2>/dev/null; then
+        die "Windows canonical tmux session exists. Refusing promotion."
+    fi
+
+    local ps_command raw tcp udp
+
+    ps_command="\$tcp = @(Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue).Count
+\$udp = @(Get-NetUDPEndpoint -LocalPort $BEDROCK_PORT -ErrorAction SilentlyContinue).Count
+'JAVA_TCP=' + \$tcp
+'BEDROCK_UDP=' + \$udp"
+
+    if ! raw="$(
+        powershell.exe -NoProfile -NonInteractive \
+            -Command "$ps_command" 2>&1 | tr -d '\r'
+    )"; then
+        printf '%s\n' "$raw" >&2
+        die "Could not establish Windows canonical listener state."
+    fi
+
+    tcp="$(printf '%s\n' "$raw" | awk -F= '$1=="JAVA_TCP"{print $2}')"
+    udp="$(printf '%s\n' "$raw" | awk -F= '$1=="BEDROCK_UDP"{print $2}')"
+
+    [[ "$tcp" =~ ^[0-9]+$ && "$udp" =~ ^[0-9]+$ ]] ||
+        die "Windows listener probe returned incomplete data."
+
+    printf 'WINDOWS_JAVA_TCP_LISTENERS=%s\n' "$tcp"
+    printf 'WINDOWS_BEDROCK_UDP_ENDPOINTS=%s\n' "$udp"
+
+    (( tcp == 0 && udp == 0 )) ||
+        die "Windows canonical is active. Refusing to overwrite or promote."
+}
+
+remote_manifest() {
+    local remote_path command
+    remote_path="${UBUNTU_SERVER_DIR%/}/.hagonoy-generation.json"
+
+    command="$(
+        python3 - "$remote_path" <<'PY'
+import shlex
+import sys
+print("cat -- " + shlex.quote(sys.argv[1]))
+PY
+    )" || die "Could not construct remote manifest command."
+
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$command"
+}
+
+validate_source_manifest() {
+    local source_state="$1"
+
+    remote_manifest > "$WORK_ROOT/source-generation.json" ||
+        die "Could not retrieve Ubuntu's generation manifest."
+
+    mkdir -p "$WORK_ROOT/source-snapshot"
+    cp "$WORK_ROOT/source-generation.json" \
+       "$WORK_ROOT/source-snapshot/.hagonoy-generation.json"
+
+    python3 "$HELPER" show "$WORK_ROOT/source-snapshot" \
+        > "$WORK_ROOT/source-validated.json" ||
+        die "Ubuntu generation manifest failed validation."
+
+    python3 - "$WORK_ROOT/source-validated.json" "$source_state" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = sys.argv[2]
+
+if data.get("host") != "ubuntu":
+    raise SystemExit("Source generation is not recorded as Ubuntu.")
+if data.get("state") != expected:
+    raise SystemExit(
+        f"Expected Ubuntu state {expected}; found {data.get('state')}."
+    )
+
+print(f"SOURCE_GENERATION={data['generation']}")
+print(f"SOURCE_GENERATION_ID={data['generation_id']}")
+print(f"SOURCE_STATE={data['state'].upper()}")
+print(f"SOURCE_PAPER={data['paper_version']}")
+print(f"SOURCE_MINECRAFT={data['minecraft_version']}")
+PY
+}
+
+check_remote_tools() {
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" \
+        'command -v rsync >/dev/null && command -v du >/dev/null && command -v tmux >/dev/null && command -v ss >/dev/null' ||
+        die "Ubuntu is missing rsync or a required verification tool."
+}
+
+estimate_transfer() {
+    local result size free_kib needed
+
+    result="$(
+        "${SSH[@]}" "$UBUNTU_SSH_TARGET" \
+            "du -sb -- '$UBUNTU_SERVER_DIR' | awk '{print \$1}'"
+    )" || die "Could not estimate Ubuntu server directory size."
+
+    size="${result%%$'\n'*}"
+    [[ "$size" =~ ^[0-9]+$ ]] || die "Invalid remote size estimate."
+
+    free_kib="$(df -Pk "$PARENT" | awk 'NR==2 {print $4}')"
+    [[ "$free_kib" =~ ^[0-9]+$ ]] || die "Could not determine Windows free space."
+
+    needed=$((size + 128 * 1024 * 1024))
+    (( free_kib * 1024 >= needed )) ||
+        die "Insufficient Windows free space for the transfer."
+
+    printf 'ESTIMATED_TRANSFER_BYTES=%s\n' "$size"
+    printf 'WINDOWS_FREE_KIB=%s\n' "$free_kib"
+}
+
+validate_existing_windows_copy() {
+    if [[ ! -e "$WINDOWS_SERVER_DIR" && ! -L "$WINDOWS_SERVER_DIR" ]]; then
+        echo "WINDOWS_CANONICAL=ABSENT"
+        return
+    fi
+
+    [[ -d "$WINDOWS_SERVER_DIR" && ! -L "$WINDOWS_SERVER_DIR" ]] ||
+        die "Existing Windows canonical path is not a normal directory."
+
+    python3 "$HELPER" show "$WINDOWS_SERVER_DIR" \
+        > "$WORK_ROOT/existing-windows-manifest.json" ||
+        die "Existing Windows canonical copy has no valid generation manifest. Refusing replacement."
+
+    python3 - \
+        "$WORK_ROOT/existing-windows-manifest.json" \
+        "$WORK_ROOT/source-validated.json" <<'PYMANIFEST'
+import json
+import sys
+from pathlib import Path
+
+existing = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+source = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+if existing.get("state") != "stopped":
+    raise SystemExit("Existing Windows canonical generation is not STOPPED.")
+
+old_id = existing["generation_id"]
+source_id = source["generation_id"]
+
+if old_id != source_id and old_id not in source["ancestors"]:
+    raise SystemExit(
+        "Existing Windows generation is not an ancestor of Ubuntu. "
+        "Refusing to overwrite a divergent or unrelated copy."
+    )
+
+print(f"EXISTING_WINDOWS_GENERATION={existing['generation']}")
+print(f"EXISTING_WINDOWS_GENERATION_ID={old_id}")
+print("EXISTING_WINDOWS_STATE=STOPPED")
+print("EXISTING_WINDOWS_LINEAGE=VERIFIED")
+PYMANIFEST
+}
+
+check_source_running() {
+    local result
+    result="$(
+        "${SSH[@]}" "$UBUNTU_SSH_TARGET" \
+            "if tmux has-session -t '=$UBUNTU_TMUX_SESSION' 2>/dev/null && ss -H -ltn 'sport = :$MINECRAFT_PORT' | grep -q .; then echo RUNNING; else echo NOT_RUNNING_OR_UNCERTAIN; fi"
+    )" || die "Could not establish Ubuntu runtime state."
+
+    [[ "$result" == "RUNNING" ]] ||
+        die "Ubuntu must be confirmed RUNNING before this pull. Resolve its state first."
+}
+
+
+check_source_stopped() {
+    local result
+    result="$(remote "
+        s=0
+        tmux has-session -t '=$UBUNTU_TMUX_SESSION' 2>/dev/null && s=1
+        t=\$(ss -H -ltn 'sport = :$MINECRAFT_PORT' | wc -l)
+        u=\$(ss -H -lun 'sport = :$BEDROCK_PORT' | wc -l)
+        if [ \"\$s\" = 0 ] && [ \"\$t\" -eq 0 ] && [ \"\$u\" -eq 0 ]; then
+            echo STOPPED
+        else
+            echo NOT_STOPPED_OR_UNCERTAIN
+        fi
+    ")" || die "Could not establish Ubuntu stopped state."
+
+    [[ "$result" == "STOPPED" ]] ||
+        die "Ubuntu is not confirmed STOPPED."
+}
+
+promote_incoming() {
+    local incoming="$1"
+    local rollback=""
+
+    echo
+    echo "========== WINDOWS CANONICAL PROMOTION =========="
+
+    if [[ -e "$WINDOWS_SERVER_DIR" || -L "$WINDOWS_SERVER_DIR" ]]; then
+        rollback="${WINDOWS_SERVER_DIR}.rollback.$(date '+%Y%m%dT%H%M%S')-${RANDOM}"
+        [[ ! -e "$rollback" && ! -L "$rollback" ]] ||
+            die "Rollback path already exists: $rollback"
+
+        echo "Retaining previous canonical copy at:"
+        echo "$rollback"
+
+        mv -- "$WINDOWS_SERVER_DIR" "$rollback"
+
+        if ! mv -- "$incoming" "$WINDOWS_SERVER_DIR"; then
+            warn "Promotion failed. Restoring the previous canonical directory."
+            mv -- "$rollback" "$WINDOWS_SERVER_DIR" ||
+                warn "Automatic restoration failed. Previous canonical is retained at $rollback"
+            die "Could not promote incoming server copy."
+        fi
+    else
+        mv -- "$incoming" "$WINDOWS_SERVER_DIR" ||
+            die "Could not promote incoming server copy."
+    fi
+
+    PROMOTED=1
+
+    echo "WINDOWS_CANONICAL_PROMOTION=COMPLETE"
+    [[ -n "$rollback" ]] && echo "WINDOWS_ROLLBACK=$rollback"
+}
+
+echo "========== HAGONOY UBUNTU-TO-WINDOWS PULL =========="
+echo "Source:      $UBUNTU_SSH_TARGET:$UBUNTU_SERVER_DIR"
+echo "Destination: $WINDOWS_SERVER_DIR"
+echo "Staging:     excluded"
+echo "TAR backup:  not created"
+
+check_windows_stopped
+check_remote_tools
+
+WORK_ROOT="$(mktemp -d "$PARENT/.hagonoy-pull.XXXXXX")"
+INCOMING="$WORK_ROOT/minecraft-server"
+mkdir -p "$INCOMING"
+
+check_source_running
+
+echo
+echo "========== SOURCE GENERATION =========="
+validate_source_manifest running
+
+echo
+echo "========== EXISTING WINDOWS GENERATION =========="
+validate_existing_windows_copy
+
+echo
+echo "========== TRANSFER CAPACITY =========="
+estimate_transfer
+
+if [[ "$MODE" == "--plan" ]]; then
+    echo
+    echo "RESULT=READY_FOR_EXPLICIT_PULL"
+    echo "Plan only. No server was stopped and no files were transferred."
+    rm -rf -- "$WORK_ROOT"
+    WORK_ROOT=""
+    exit 0
+fi
+
+[[ -t 0 && -r /dev/tty ]] ||
+    die "Execution requires an interactive terminal."
+
+echo
+if [[ "$MODE" == "--handoff" ]]; then
+    echo "This operation will stop Ubuntu, copy and verify its world,"
+    echo "promote the Windows canonical copy, then start Windows."
+    echo "Ubuntu will remain STOPPED after Windows startup is attempted."
+    expected_confirmation="HANDOFF-UBUNTU-TO-WINDOWS"
+else
+    echo "This operation will gracefully stop Ubuntu, copy its server to Windows,"
+    echo "verify file content and generation metadata, then restart Ubuntu."
+    echo "It does not start Windows canonical or touch Windows staging."
+    expected_confirmation="PULL-UBUNTU-TO-WINDOWS"
+fi
+
+printf 'To authorize this operation, type %s: ' "$expected_confirmation"
+IFS= read -r confirmation < /dev/tty
+[[ "$confirmation" == "$expected_confirmation" ]] ||
+    die "Confirmation did not match. No server was stopped."
+
+echo
+echo "========== STOP UBUNTU FOR CONSISTENT COPY =========="
+# Set the recovery flag before invoking stop: if its read-back fails after
+# a real shutdown, the EXIT handler still attempts to restore the primary.
+SOURCE_STOPPED=1
+"$ROUTER" dual-stop
+
+echo
+echo "========== VERIFY STOPPED SOURCE MANIFEST =========="
+validate_source_manifest stopped
+
+echo
+echo "========== RSYNC SERVER DATA =========="
+echo "Progress includes transferred bytes, rate, and completion percentage."
+
+rsync \
+    -rltc \
+    --no-perms --no-owner --no-group \
+    --partial --delete \
+    --human-readable \
+    --info=progress2,stats1 \
+    -e "ssh -T -o BatchMode=yes -o ConnectTimeout=8" \
+    "$UBUNTU_SSH_TARGET:$UBUNTU_SERVER_DIR/" \
+    "$INCOMING/"
+
+echo
+echo "========== VERIFY COPIED GENERATION =========="
+
+python3 "$HELPER" show "$INCOMING" > "$WORK_ROOT/windows-manifest.json"
+
+python3 - \
+    "$WORK_ROOT/source-validated.json" \
+    "$WORK_ROOT/windows-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+copy = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+if source != copy:
+    raise SystemExit("Windows copy manifest differs from the stopped Ubuntu manifest.")
+
+if copy["state"] != "stopped":
+    raise SystemExit("Windows copy must be STOPPED before promotion.")
+
+print("GENERATION_COPY=IDENTICAL")
+print(f"GENERATION={copy['generation']}")
+print(f"GENERATION_ID={copy['generation_id']}")
+print("STATE=STOPPED")
+PY
+
+echo
+echo "========== VERIFY FILE CONTENT =========="
+
+VERIFY_DIFF="$(
+    rsync \
+        -rltc \
+        --no-perms --no-owner --no-group \
+        --checksum --dry-run --itemize-changes \
+        --out-format='%i|%n' \
+        -e "ssh -T -o BatchMode=yes -o ConnectTimeout=8" \
+        "$UBUNTU_SSH_TARGET:$UBUNTU_SERVER_DIR/" \
+        "$INCOMING/"
+)" || die "Independent rsync checksum comparison failed."
+
+if [[ -n "$VERIFY_DIFF" ]]; then
+    printf '%s\n' "$VERIFY_DIFF"
+    die "Source and incoming copy differ. Promotion refused."
+fi
+
+echo "CONTENT_VERIFICATION=PASSED"
+
+check_windows_stopped
+promote_incoming "$INCOMING"
+
+echo
+if [[ "$MODE" == "--handoff" ]]; then
+    echo
+    echo "========== START WINDOWS CANONICAL =========="
+
+    # Once startup is attempted, never automatically restart Ubuntu:
+    # a failed Windows start leaves its generation RUNNING/uncertain.
+    KEEP_UBUNTU_STOPPED=1
+
+    flock -n /tmp/hagonoy-smp-windows-lifecycle.lock \
+        python3 "$HELPER" start-server "$WINDOWS_SERVER_DIR" \
+            --host windows \
+            --session "$WINDOWS_TMUX_SESSION" \
+            --port "$MINECRAFT_PORT" \
+            --ready-pattern "Done" \
+            --timeout 900 ||
+        die "Windows startup did not confirm. Ubuntu remains STOPPED for safety."
+
+    echo
+    echo "========== VERIFY WINDOWS RUNTIME =========="
+    python3 "$HELPER" verify-running "$WINDOWS_SERVER_DIR" windows AUTO AUTO \
+        --session "$WINDOWS_TMUX_SESSION" \
+        --port "$MINECRAFT_PORT" ||
+        die "Windows runtime verification failed. Ubuntu remains STOPPED."
+
+    validate_source_manifest stopped
+    check_source_stopped
+
+    echo
+    echo "========== FINAL HANDOFF STATUS =========="
+    "$ROUTER" dual-status
+
+    echo
+    echo "========== WINDOWS ACTIVE MANIFEST =========="
+    python3 "$HELPER" show "$WINDOWS_SERVER_DIR"
+
+    echo
+    echo "========== UBUNTU STOPPED MANIFEST =========="
+    remote_manifest
+
+    HANDOFF_SUCCEEDED=1
+    echo
+    echo "HANDOFF=SUCCESS"
+    echo "Windows is the active host."
+    echo "Ubuntu remains STOPPED."
+    echo "Windows staging was not changed."
+else
+    echo
+    echo "========== RESTART UBUNTU PRIMARY =========="
+    SOURCE_RESTART_ATTEMPTED=1
+    if "$ROUTER" dual-start; then
+        SOURCE_STOPPED=0
+        echo "[OK] Ubuntu primary restarted."
+    else
+        warn "Windows copy was promoted, but Ubuntu restart did not confirm. The Windows copy is retained."
+        die "Inspect Ubuntu's session, ports, and generation manifest before retrying."
+    fi
+
+    echo
+    echo "========== FINAL DUAL-HOST STATUS =========="
+    "$ROUTER" dual-status
+
+    echo
+    echo "========== WINDOWS CANONICAL MANIFEST =========="
+    python3 "$HELPER" show "$WINDOWS_SERVER_DIR"
+
+    echo
+    echo "========== UBUNTU ACTIVE MANIFEST =========="
+    remote_manifest
+
+    echo
+    echo "PULL=SUCCESS"
+    echo "Ubuntu remains the active primary."
+    echo "Windows canonical is a verified stopped copy."
+    echo "Windows staging was not changed."
+fi

@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+ROUTER="$ROOT/bin/hagonoy"
+
+die()  { printf '[hagonoy-push] ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf '[hagonoy-push] WARNING: %s\n' "$*" >&2; }
+log()  { printf '[hagonoy-push] %s\n' "$*"; }
+
+[[ -f "$CONFIG" && -f "$HELPER" && -x "$ROUTER" ]] ||
+    die "Missing configuration, generation helper, or manager."
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?}"
+: "${UBUNTU_SSH_TARGET:?}"
+: "${UBUNTU_SERVER_DIR:?}"
+: "${WINDOWS_TMUX_SESSION:?}"
+: "${UBUNTU_TMUX_SESSION:?}"
+: "${MINECRAFT_PORT:?}"
+: "${BEDROCK_PORT:?}"
+
+[[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+    die "Usage: ./bin/hagonoy-dual-push --plan|--execute"
+MODE="$1"
+
+for cmd in ssh rsync tmux powershell.exe python3 mktemp flock df du; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        die "Missing required command: $cmd"
+done
+
+[[ "$MINECRAFT_PORT" =~ ^[0-9]+$ && "$BEDROCK_PORT" =~ ^[0-9]+$ ]] ||
+    die "Invalid configured ports."
+
+[[ -d "$WINDOWS_SERVER_DIR" && ! -L "$WINDOWS_SERVER_DIR" ]] ||
+    die "Windows canonical server directory is missing or unsafe."
+
+SSH=(ssh -T -o BatchMode=yes -o ConnectTimeout=8)
+RSYNC_SSH="ssh -T -o BatchMode=yes -o ConnectTimeout=8"
+
+remote() {
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$1"
+}
+
+quote() {
+    python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$1"
+}
+
+# Prevent two local transfer operations from running simultaneously.
+exec 9>/tmp/hagonoy-smp-transfer.lock
+flock -n 9 || die "Another HSMP transfer operation holds the transfer lock."
+
+TMP_DIR="$(mktemp -d)"
+REMOTE_WORK=""
+PROMOTED=0
+
+cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM
+
+    if [[ -n "$REMOTE_WORK" ]]; then
+        if (( PROMOTED == 1 )); then
+            remote "rm -rf -- $(quote "$REMOTE_WORK")" >/dev/null 2>&1 || true
+        else
+            warn "Unpromoted remote copy retained at: $REMOTE_WORK"
+        fi
+    fi
+
+    rm -rf -- "$TMP_DIR"
+    exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+windows_state() {
+    local session=0 raw tcp udp
+
+    tmux has-session -t "=$WINDOWS_TMUX_SESSION" 2>/dev/null && session=1 || true
+
+    raw="$(
+        powershell.exe -NoProfile -NonInteractive -Command \
+          "\$t=@(Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue).Count; \$u=@(Get-NetUDPEndpoint -LocalPort $BEDROCK_PORT -ErrorAction SilentlyContinue).Count; 'TCP='+\$t; 'UDP='+\$u" \
+          2>/dev/null | tr -d '\r'
+    )" || { echo UNKNOWN; return; }
+
+    tcp="$(awk -F= '$1=="TCP"{print $2}' <<<"$raw")"
+    udp="$(awk -F= '$1=="UDP"{print $2}' <<<"$raw")"
+
+    [[ "$tcp" =~ ^[0-9]+$ && "$udp" =~ ^[0-9]+$ ]] ||
+        { echo UNKNOWN; return; }
+
+    if (( session == 0 && tcp == 0 && udp == 0 )); then
+        echo STOPPED
+    elif (( session == 1 && tcp > 0 )); then
+        echo RUNNING
+    else
+        echo UNKNOWN
+    fi
+}
+
+ubuntu_state() {
+    local result
+    result="$(remote "
+        s=0
+        tmux has-session -t '=$UBUNTU_TMUX_SESSION' 2>/dev/null && s=1
+        t=\$(ss -H -ltn 'sport = :$MINECRAFT_PORT' | wc -l)
+        u=\$(ss -H -lun 'sport = :$BEDROCK_PORT' | wc -l)
+        if [ \"\$s\" = 0 ] && [ \"\$t\" -eq 0 ] && [ \"\$u\" -eq 0 ]; then
+            echo STOPPED
+        elif [ \"\$s\" = 1 ] && [ \"\$t\" -gt 0 ]; then
+            echo RUNNING
+        else
+            echo UNKNOWN
+        fi
+    ")" || { echo UNKNOWN; return; }
+
+    printf '%s\n' "$result" | tail -n 1
+}
+
+remote_manifest() {
+    remote "cat -- $(quote "${UBUNTU_SERVER_DIR%/}/.hagonoy-generation.json")"
+}
+
+echo "========== HSMP WINDOWS-TO-UBUNTU PUSH =========="
+
+WIN_STATE="$(windows_state)"
+UBU_STATE="$(ubuntu_state)"
+
+printf 'Windows canonical: %s\n' "$WIN_STATE"
+printf 'Ubuntu canonical:  %s\n' "$UBU_STATE"
+
+[[ "$WIN_STATE" == STOPPED && "$UBU_STATE" == STOPPED ]] ||
+    die "Both canonical servers must be confirmed STOPPED. No transfer performed."
+
+remote "
+    test -d $(quote "$UBUNTU_SERVER_DIR") &&
+    test ! -L $(quote "$UBUNTU_SERVER_DIR") &&
+    command -v rsync >/dev/null &&
+    command -v python3 >/dev/null &&
+    command -v ss >/dev/null
+" || die "Ubuntu destination or required remote tools are unavailable."
+
+echo
+echo "========== VALIDATE GENERATION LINEAGE =========="
+
+python3 "$HELPER" show "$WINDOWS_SERVER_DIR" > "$TMP_DIR/windows.json" ||
+    die "Windows generation manifest is missing or invalid."
+
+remote_manifest > "$TMP_DIR/ubuntu-manifest.json" ||
+    die "Ubuntu generation manifest is unavailable."
+
+mkdir "$TMP_DIR/ubuntu-snapshot"
+cp "$TMP_DIR/ubuntu-manifest.json" \
+   "$TMP_DIR/ubuntu-snapshot/.hagonoy-generation.json"
+
+python3 "$HELPER" show "$TMP_DIR/ubuntu-snapshot" > "$TMP_DIR/ubuntu.json" ||
+    die "Ubuntu generation manifest is invalid."
+
+python3 - "$TMP_DIR/windows.json" "$TMP_DIR/ubuntu.json" <<'PY'
+import json
+import sys
+
+windows = json.load(open(sys.argv[1], encoding="utf-8"))
+ubuntu = json.load(open(sys.argv[2], encoding="utf-8"))
+
+if windows["host"] != "windows" or windows["state"] != "stopped":
+    raise SystemExit("Windows source must be a stopped Windows generation.")
+
+if ubuntu["host"] != "ubuntu" or ubuntu["state"] != "stopped":
+    raise SystemExit("Ubuntu destination must be a stopped Ubuntu generation.")
+
+if ubuntu["generation_id"] not in windows["ancestors"]:
+    raise SystemExit(
+        "Windows does not prove descent from Ubuntu. "
+        "Divergent or unrelated generations cannot be promoted."
+    )
+
+if windows["generation"] <= ubuntu["generation"]:
+    raise SystemExit("Windows source is not a newer descendant of Ubuntu.")
+
+print("GENERATION_LINEAGE=VERIFIED")
+print(f"WINDOWS_GENERATION={windows['generation']}")
+print(f"WINDOWS_GENERATION_ID={windows['generation_id']}")
+print(f"UBUNTU_GENERATION={ubuntu['generation']}")
+print(f"UBUNTU_GENERATION_ID={ubuntu['generation_id']}")
+PY
+
+SOURCE_BYTES="$(du -sb -- "$WINDOWS_SERVER_DIR" | awk '{print $1}')"
+REMOTE_PARENT="$(dirname -- "$UBUNTU_SERVER_DIR")"
+REMOTE_FREE="$(remote "df -Pk -- $(quote "$REMOTE_PARENT") | awk 'NR==2 {print \$4}'")"
+
+[[ "$SOURCE_BYTES" =~ ^[0-9]+$ && "$REMOTE_FREE" =~ ^[0-9]+$ ]] ||
+    die "Could not measure source size or Ubuntu free space."
+
+(( REMOTE_FREE * 1024 >= SOURCE_BYTES + 134217728 )) ||
+    die "Insufficient Ubuntu free space for staging."
+
+echo
+echo "========== PUSH PLAN =========="
+printf 'Source:      %s\n' "$WINDOWS_SERVER_DIR"
+printf 'Destination: %s:%s\n' "$UBUNTU_SSH_TARGET" "$UBUNTU_SERVER_DIR"
+printf 'Source size: %s bytes\n' "$SOURCE_BYTES"
+printf 'Ubuntu free: %s KiB\n' "$REMOTE_FREE"
+echo "Both servers: STOPPED"
+echo "Generation lineage: VERIFIED"
+echo "Previous Ubuntu copy: RETAINED as rollback"
+
+if [[ "$MODE" == "--plan" ]]; then
+    echo
+    echo "RESULT=READY_FOR_PUSH"
+    echo "Plan only. No server was stopped and no files were transferred."
+    exit 0
+fi
+
+[[ -t 0 && -r /dev/tty ]] ||
+    die "Execution requires an interactive terminal."
+
+echo
+echo "This operation transfers the newer Windows generation to Ubuntu."
+echo "It verifies the copied files and retains the previous Ubuntu directory."
+echo "After promotion, it attempts to restart Ubuntu as the active primary."
+
+printf 'To authorize this transfer, type PUSH-WINDOWS-TO-UBUNTU: '
+IFS= read -r confirmation < /dev/tty
+
+[[ "$confirmation" == "PUSH-WINDOWS-TO-UBUNTU" ]] ||
+    die "Confirmation did not match. No files were transferred."
+
+REMOTE_WORK="$(remote "mktemp -d -- $(quote "$REMOTE_PARENT/.hagonoy-push.XXXXXX")")"
+REMOTE_INCOMING="${REMOTE_WORK%/}/incoming"
+REMOTE_ROLLBACK="${UBUNTU_SERVER_DIR}.rollback.$(date '+%Y%m%dT%H%M%S')-$$"
+
+remote "mkdir -- $(quote "$REMOTE_INCOMING")" ||
+    die "Could not create remote staging directory."
+
+echo
+echo "========== RSYNC WINDOWS DATA TO UBUNTU =========="
+echo "Progress includes transferred bytes, rate, and completion percentage."
+
+rsync \
+    -rltc \
+    --no-perms --no-owner --no-group \
+    --partial --delete \
+    --human-readable \
+    --info=progress2,stats1 \
+    -e "$RSYNC_SSH" \
+    "$WINDOWS_SERVER_DIR/" \
+    "$UBUNTU_SSH_TARGET:$REMOTE_INCOMING/"
+
+echo
+echo "========== VERIFY COPIED GENERATION =========="
+
+remote "cat -- $(quote "$REMOTE_INCOMING/.hagonoy-generation.json")" \
+    > "$TMP_DIR/incoming-manifest.json" ||
+    die "Could not read the incoming Ubuntu manifest."
+
+mkdir "$TMP_DIR/incoming-snapshot"
+cp "$TMP_DIR/incoming-manifest.json" \
+   "$TMP_DIR/incoming-snapshot/.hagonoy-generation.json"
+
+python3 "$HELPER" show "$TMP_DIR/incoming-snapshot" \
+    > "$TMP_DIR/incoming.json" ||
+    die "Incoming generation manifest failed validation."
+
+python3 - \
+    "$TMP_DIR/windows.json" \
+    "$TMP_DIR/incoming.json" <<'PY'
+import json
+import sys
+
+source = json.load(open(sys.argv[1], encoding="utf-8"))
+incoming = json.load(open(sys.argv[2], encoding="utf-8"))
+
+if source != incoming:
+    raise SystemExit("Incoming generation manifest differs from Windows source.")
+
+if incoming["host"] != "windows" or incoming["state"] != "stopped":
+    raise SystemExit("Incoming copy is not a stopped Windows generation.")
+
+print("GENERATION_COPY=IDENTICAL")
+print(f"GENERATION={incoming['generation']}")
+print(f"GENERATION_ID={incoming['generation_id']}")
+PY
+
+echo
+echo "========== VERIFY FILE CONTENT =========="
+
+VERIFY_DIFF="$(
+    rsync \
+        -rltc \
+        --no-perms --no-owner --no-group \
+        --checksum --dry-run --itemize-changes \
+        --out-format='%i|%n' \
+        -e "$RSYNC_SSH" \
+        "$WINDOWS_SERVER_DIR/" \
+        "$UBUNTU_SSH_TARGET:$REMOTE_INCOMING/"
+)" || die "Independent checksum comparison failed."
+
+if [[ -n "$VERIFY_DIFF" ]]; then
+    printf '%s\n' "$VERIFY_DIFF"
+    die "Source and incoming copy differ. Promotion refused."
+fi
+
+echo "CONTENT_VERIFICATION=PASSED"
+
+# Recheck that neither server became active during the transfer.
+[[ "$(windows_state)" == STOPPED ]] ||
+    die "Windows became active during transfer. Promotion refused."
+
+[[ "$(ubuntu_state)" == STOPPED ]] ||
+    die "Ubuntu became active during transfer. Promotion refused."
+
+echo
+echo "========== UBUNTU CANONICAL PROMOTION =========="
+
+remote "
+    set -eu
+    test -d $(quote "$UBUNTU_SERVER_DIR")
+    test ! -L $(quote "$UBUNTU_SERVER_DIR")
+    test -d $(quote "$REMOTE_INCOMING")
+    test ! -L $(quote "$REMOTE_INCOMING")
+    test ! -e $(quote "$REMOTE_ROLLBACK")
+    test ! -L $(quote "$REMOTE_ROLLBACK")
+
+    mv -- $(quote "$UBUNTU_SERVER_DIR") $(quote "$REMOTE_ROLLBACK")
+
+    if mv -- $(quote "$REMOTE_INCOMING") $(quote "$UBUNTU_SERVER_DIR"); then
+        echo UBUNTU_CANONICAL_PROMOTION=COMPLETE
+        echo UBUNTU_ROLLBACK=$(quote "$REMOTE_ROLLBACK")
+    else
+        echo 'Promotion failed; restoring previous Ubuntu directory.' >&2
+        mv -- $(quote "$REMOTE_ROLLBACK") $(quote "$UBUNTU_SERVER_DIR")
+        exit 1
+    fi
+" || die "Ubuntu promotion failed. Inspect the remote staging and rollback paths."
+
+PROMOTED=1
+
+echo
+echo "========== RESTORE UBUNTU PRIMARY =========="
+
+if "$ROUTER" dual-start; then
+    echo "[OK] Ubuntu primary restarted."
+else
+    die "Ubuntu restart was not confirmed. Both copies are retained; inspect status before retrying."
+fi
+
+echo
+echo "========== VERIFY FINAL GENERATIONS =========="
+
+remote_manifest > "$TMP_DIR/final-ubuntu-manifest.json" ||
+    die "Could not read the final Ubuntu manifest."
+
+mkdir "$TMP_DIR/final-ubuntu-snapshot"
+cp "$TMP_DIR/final-ubuntu-manifest.json" \
+   "$TMP_DIR/final-ubuntu-snapshot/.hagonoy-generation.json"
+
+python3 "$HELPER" show "$TMP_DIR/final-ubuntu-snapshot" \
+    > "$TMP_DIR/final-ubuntu.json" ||
+    die "Final Ubuntu manifest failed validation."
+
+python3 - "$TMP_DIR/windows.json" "$TMP_DIR/final-ubuntu.json" <<'PY'
+import json
+import sys
+
+windows = json.load(open(sys.argv[1], encoding="utf-8"))
+ubuntu = json.load(open(sys.argv[2], encoding="utf-8"))
+
+if ubuntu["host"] != "ubuntu" or ubuntu["state"] != "running":
+    raise SystemExit("Ubuntu is not the confirmed running owner.")
+
+if windows["generation_id"] not in ubuntu["ancestors"]:
+    raise SystemExit("Ubuntu does not prove descent from the transferred Windows generation.")
+
+if ubuntu["generation"] <= windows["generation"]:
+    raise SystemExit("Ubuntu did not advance beyond the Windows source generation.")
+
+print(f"WINDOWS_GENERATION={windows['generation']} (stopped)")
+print(f"UBUNTU_GENERATION={ubuntu['generation']} (running)")
+print(f"UBUNTU_GENERATION_ID={ubuntu['generation_id']}")
+print("FAILBACK_LINEAGE=VERIFIED")
+PY
+
+[[ "$(windows_state)" == STOPPED ]] ||
+    die "Windows canonical is unexpectedly active after failback."
+
+echo
+"$ROUTER" dual-status
+
+echo
+echo "PUSH=SUCCESS"
+echo "Ubuntu is the active primary."
+echo "Windows canonical is the retained stopped ancestor."
