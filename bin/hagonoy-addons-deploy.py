@@ -2,11 +2,13 @@
 """Backup-first, plan-validated HSMP Paper/plugin/datapack deployment."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import runpy
+import select
 import shlex
 import shutil
 import subprocess
@@ -49,8 +51,7 @@ REMOTE_RESTORE_MARKER = "__HSMP_REMOTE_RESTORE__"
 
 
 def fail(message: str) -> "NoReturn":
-    print(f"[hagonoy-update] ERROR: {message}", file=sys.stderr)
-    raise SystemExit(1)
+    raise RuntimeError(message)
 
 
 def run(args: list[str], *, input_text: str | None = None, timeout: int = 60) -> str:
@@ -71,25 +72,60 @@ def run_stream(args: list[str], *, timeout: int = 3600) -> str:
     try:
         process = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=False, bufsize=0,
         )
     except OSError as exc:
         fail(f"Could not start {args[0]}: {exc}")
-    output: list[str] = []
     assert process.stdout is not None
+    fd = process.stdout.fileno()
+    decoder = __import__("codecs").getincrementaldecoder("utf-8")("replace")
+    output: list[str] = []
     started = time.monotonic()
     try:
-        for line in process.stdout:
-            output.append(line)
-            print(line, end="", flush=True)
-            if time.monotonic() - started > timeout:
-                process.kill()
+        while True:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
                 fail(f"{args[0]} exceeded its {timeout}-second safety timeout.")
-        code = process.wait(timeout=max(1, timeout - (time.monotonic() - started)))
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        fail(f"{args[0]} timed out.")
+            readable, _, _ = select.select([fd], [], [], min(0.5, remaining))
+            if readable:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                decoded = decoder.decode(chunk)
+                if decoded:
+                    output.append(decoded)
+                    print(decoded, end="", flush=True)
+            elif process.poll() is not None:
+                # Drain the final bytes before exiting.
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                decoded = decoder.decode(chunk)
+                if decoded:
+                    output.append(decoded)
+                    print(decoded, end="", flush=True)
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            output.append(tail)
+            print(tail, end="", flush=True)
+        code = process.wait(timeout=5)
+    except Exception:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+    finally:
+        process.stdout.close()
     if code:
         fail(f"{args[0]} returned exit code {code}.")
     return "".join(output)
