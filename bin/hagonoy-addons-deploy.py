@@ -269,7 +269,7 @@ def stream_backup(args: list[str]) -> str:
 
 
 def source_states(a: dict[str, Any], config: tuple[str, ...]) -> tuple[str, str, str]:
-    win_session, target, ubuntu_dir, windows_dir, ubu_session, port = config
+    win_session, target, ubuntu_dir, windows_dir, ubu_session, port, _win_backup_dir, _ubu_backup_dir = config
     win = a["windows_state"](win_session, port)
     ubu = a["ubuntu_state"](target, ubu_session, port)
     if win == "UNKNOWN" or ubu == "UNKNOWN":
@@ -313,9 +313,6 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
                 f"Paper download is Minecraft {version}, but the installed server is {current[0]}. "
                 "Minecraft world upgrades need a separate migration plan."
             )
-        verified, detail = a["official_paper_candidate"](path, version, build)
-        if not verified:
-            fail("Paper candidate is not eligible: " + detail)
         current_jar = facts.get("paper_jar")
         if not current_jar:
             fail("Installed server.jar could not be read; refusing to replace Paper.")
@@ -325,6 +322,9 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
         if build == current[1] and candidate_hash != current_jar["sha256"]:
             fail("Paper reports the installed build number but has a different binary hash.")
         if candidate_hash != current_jar["sha256"]:
+            verified, detail = a["official_paper_candidate"](path, version, build)
+            if not verified:
+                fail("Paper candidate is not eligible: " + detail)
             paper_update = {
                 "source": str(path),
                 "sha256": candidate_hash,
@@ -357,9 +357,6 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
         descriptor = a["read_plugin_descriptor"](blob)
         if not descriptor:
             fail(f"{label} download has no readable plugin descriptor.")
-        verified, detail = a["official_plugin_candidate"](
-            label, path, str(descriptor.get("version", "unknown")), candidate_hash
-        )
         current = next(
             (
                 item for item in installed
@@ -369,6 +366,9 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
         )
         if current and current.get("sha256") == candidate_hash:
             continue
+        verified, detail = a["official_plugin_candidate"](
+            label, path, str(descriptor.get("version", "unknown")), candidate_hash
+        )
         if current:
             comparison = a["compare_versions"](
                 str(descriptor.get("version", "unknown")),
@@ -400,10 +400,7 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
         a["pack_key"](name) for name in facts.get("legacy_disabled_datapacks", [])
     }
     retired = sorted(((current_active | current_disabled) & known) - desired_keys)
-    datapack_changes = [
-        pack for pack in pack_updates
-        if facts.get("datapack_hashes", {}).get(pack["filename"]) != pack["sha256"]
-    ]
+
     pack_updates = []
     with __import__("zipfile").ZipFile(primary_path) as outer:
         outer_entries = {
@@ -424,6 +421,11 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
                 "bytes": len(blob),
                 "blob": blob,
             })
+
+    datapack_changes = [
+        pack for pack in pack_updates
+        if facts.get("datapack_hashes", {}).get(pack["filename"]) != pack["sha256"]
+    ]
 
     return {
         "host": host,
@@ -517,15 +519,18 @@ def lifecycle(host: str, action: str) -> None:
     run_stream([str(script), action], timeout=1200)
 
 
-def restore_archive(host: str, server_dir: str, target: str, archive_name: str) -> None:
+def restore_archive(
+    host: str, server_dir: str, target: str, archive_name: str,
+    windows_backup_dir: str, ubuntu_backup_dir: str,
+) -> None:
     if host == "WINDOWS":
-        archive = WINDOWS_BACKUP_DIR / archive_name
+        archive = Path(windows_backup_dir) / archive_name
         if not archive.is_file():
             raise RuntimeError(f"Verified Windows rollback archive is missing: {archive}")
         restore_archive_local(archive, Path(server_dir))
         return
 
-    remote_archive = f"/home/leonardodavinci/server-backup/{archive_name}"
+    remote_archive = str(Path(ubuntu_backup_dir) / archive_name)
     command = [
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
         target, "python3", "-", "--remote-restore", server_dir, remote_archive,
@@ -557,7 +562,7 @@ def run_backup_and_get_archive() -> tuple[str, str]:
     if not match_name or not match_hash:
         fail("Backup command did not report a verified archive name and SHA-256.")
     archive_name, expected_hash = match_name[-1], match_hash[-1]
-    local_archive = WINDOWS_BACKUP_DIR / archive_name
+    local_archive = Path(os.environ.get("WINDOWS_BACKUP_DIR_OVERRIDE", str(WINDOWS_BACKUP_DIR))) / archive_name
     if not local_archive.is_file():
         fail(f"Windows server-backup copy is missing: {local_archive}")
     actual_hash = sha256_path(local_archive)
@@ -620,7 +625,7 @@ def main() -> None:
     a = addons_module()
     config = a["config_values"]()
     host, win_state, ubu_state = source_states(a, config)
-    win_session, target, ubuntu_dir, windows_dir, ubu_session, port = config
+    win_session, target, ubuntu_dir, windows_dir, ubu_session, port, windows_backup_dir, ubuntu_backup_dir = config
     server_dir = ubuntu_dir if host == "UBUNTU" else windows_dir
     facts = a["remote_facts"](target if host == "UBUNTU" else None, server_dir)
     plan = build_update_plan(a, host, facts)
@@ -715,7 +720,7 @@ def main() -> None:
                     print(f"[hagonoy-update] Verified rollback archive retained: {archive_name}", file=sys.stderr)
                     raise SystemExit(1)
                 print("[hagonoy-update] Restoring the complete pre-update server from server-backup...")
-                restore_archive(host, server_dir, target, archive_name)
+                restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir)
                 lifecycle(host, "start")
                 if current_state(a, config, host) != "RUNNING":
                     raise RuntimeError("Original server files restored but previous server did not confirm readiness.")
