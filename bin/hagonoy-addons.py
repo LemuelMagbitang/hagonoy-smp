@@ -12,7 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DOWNLOADS = Path("/mnt/d/Hagonoy-SMP/server-update-downloads")
-PACK_FORMATS = {"26.3": (121, 0)}
+TARGET_DATA_PACK_FORMAT = (121, 0)
 PRIMARY_BUNDLE = "VanillaTweaks_d831085_UNZIP_ME.zip"
 SECONDARY_BUNDLE = "VanillaTweaks-26.3.zip"
 PAPER_RE = re.compile(r"^paper-(\d+\.\d+)-(\d+)\.jar$", re.IGNORECASE)
@@ -49,7 +49,7 @@ def config_values() -> tuple[str, str]:
         'source "$1" || exit 1; '
         'printf "%s\\0" "$UBUNTU_SSH_TARGET" "$UBUNTU_SERVER_DIR"'
     )
-    values = run(["bash", "-c", code, "bash", str(config)]).split("\0")
+    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\0").split("\0")
     if len(values) != 2 or any(not value for value in values):
         fail("Dual-host configuration is missing Ubuntu connection details.")
     return values[0], values[1]
@@ -125,9 +125,9 @@ def pack_metadata(archive: zipfile.ZipFile) -> tuple[bool, str]:
         if min_format is not None and max_format is not None:
             low = format_pair(min_format)
             high = format_pair(max_format)
-            return low <= (121, 0) <= high, f"format range {low}–{high}"
+            return low <= TARGET_DATA_PACK_FORMAT <= high, f"format range {low}–{high}"
         if isinstance(pack_format, int):
-            return pack_format == 121, f"pack_format {pack_format}"
+            return pack_format == TARGET_DATA_PACK_FORMAT[0], f"pack_format {pack_format}"
         return False, "no recognized format range for 26.3"
     except Exception as exc:
         return False, f"invalid pack.mcmeta: {exc}"
