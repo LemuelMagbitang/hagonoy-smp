@@ -107,6 +107,14 @@ def pack_key(filename: str) -> str:
     return re.sub(r"\s+v\d.*$", "", stem, flags=re.IGNORECASE).strip().casefold()
 
 
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def atomic_copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = destination.with_name(f".{destination.name}.hsmp-new-{uuid.uuid4().hex}")
@@ -125,7 +133,7 @@ def atomic_copy(source: Path, destination: Path) -> None:
 def validate_staged_file(path: Path, expected_sha: str) -> None:
     if not path.is_file() or path.is_symlink():
         fail(f"Staged update file is missing or not a regular file: {path}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = sha256_path(path)
     if digest.casefold() != expected_sha.casefold():
         fail(f"Staged update SHA-256 mismatch: {path.name}")
 
@@ -169,14 +177,20 @@ def apply_staged_changes(server_dir: Path, stage_dir: Path) -> None:
         print(f"PLUGIN={plugin['name']}:{plugin['version']}")
 
     desired = data.get("datapacks", [])
-    desired_keys = {item["key"] for item in desired}
+    desired_by_key = {item["key"]: item for item in desired}
+    desired_keys = set(desired_by_key)
     known_keys = set(data.get("known_vanilla_tweaks_keys", []))
     datapack_dir = server_dir / "world" / "datapacks"
     datapack_dir.mkdir(parents=True, exist_ok=True)
 
     for old in datapack_dir.glob("*.zip"):
         key = pack_key(old.name)
-        if key in known_keys:
+        if key not in known_keys:
+            continue
+        wanted = desired_by_key.get(key)
+        if wanted is None:
+            old.unlink()
+        elif old.name != wanted["filename"] or sha256_path(old) != wanted["sha256"]:
             old.unlink()
 
     for disabled in server_dir.glob("datapacks-disabled*"):
@@ -197,7 +211,9 @@ def apply_staged_changes(server_dir: Path, stage_dir: Path) -> None:
             raise RuntimeError(f"Unsafe datapack filename in update plan: {filename}")
         source = stage_dir / "datapacks" / filename
         validate_staged_file(source, item["sha256"])
-        atomic_copy(source, datapack_dir / filename)
+        destination = datapack_dir / filename
+        if not destination.is_file() or sha256_path(destination) != item["sha256"]:
+            atomic_copy(source, destination)
 
     actual_selected = {pack_key(path.name) for path in datapack_dir.glob("*.zip")}
     missing = sorted(desired_keys - actual_selected)
@@ -245,47 +261,7 @@ def restore_archive_local(archive_path: Path, server_dir: Path) -> None:
         shutil.rmtree(stage, ignore_errors=True)
 
 
-REMOTE_SCRIPT = r'''
-import json, os, shutil, subprocess, sys, tarfile, tempfile
-from pathlib import Path
 
-mode, server_arg, payload = sys.argv[1:4]
-server = Path(server_arg).resolve(strict=True)
-
-def safe_members(path):
-    with tarfile.open(path, "r:*") as archive:
-        for member in archive.getmembers():
-            name = member.name.replace("\\\\", "/")
-            parts = [part for part in name.split("/") if part not in ("", ".")]
-            if name.startswith("/") or ".." in parts:
-                raise SystemExit("unsafe path in backup archive: " + member.name)
-
-def rsync_restore(archive_path):
-    safe_members(archive_path)
-    stage = Path(tempfile.mkdtemp(prefix=".hagonoy-full-restore-", dir=str(server.parent)))
-    try:
-        subprocess.run(["tar", "-xf", str(archive_path), "-C", str(stage)], check=True)
-        subprocess.run([
-            "rsync", "-rlt", "--no-perms", "--no-owner", "--no-group",
-            "--delete", str(stage) + "/", str(server) + "/"
-        ], check=True)
-        if not (server / "server.properties").is_file():
-            raise SystemExit("rollback copy is missing server.properties")
-        data = json.loads((server / ".hagonoy-generation.json").read_text())
-        if data.get("state") != "stopped":
-            raise SystemExit("rollback generation manifest is not STOPPED")
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
-
-if mode == "apply":
-    stage = Path(payload).resolve(strict=True)
-    code = compile(Path(sys.argv[0]).read_text(), "<unused>", "exec") if False else None
-    raise SystemExit("remote apply must be invoked through the uploaded deploy helper")
-elif mode == "restore":
-    rsync_restore(Path(payload).resolve(strict=True))
-else:
-    raise SystemExit("unknown remote mode")
-'''
 
 
 def stream_backup(args: list[str]) -> str:
@@ -423,7 +399,11 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
     current_disabled = {
         a["pack_key"](name) for name in facts.get("legacy_disabled_datapacks", [])
     }
-    retired = sorted((current_active | current_disabled) & known - desired_keys)
+    retired = sorted(((current_active | current_disabled) & known) - desired_keys)
+    datapack_changes = [
+        pack for pack in pack_updates
+        if facts.get("datapack_hashes", {}).get(pack["filename"]) != pack["sha256"]
+    ]
     pack_updates = []
     with __import__("zipfile").ZipFile(primary_path) as outer:
         outer_entries = {
@@ -452,6 +432,7 @@ def build_update_plan(a: dict[str, Any], host: str, facts: dict[str, Any]) -> di
         "datapacks": pack_updates,
         "known_keys": sorted(known),
         "retired_keys": retired,
+        "datapack_changes": datapack_changes,
         "paper_current": a["paper_current_version"](facts.get("paper_line", "")),
     }
 
@@ -579,7 +560,7 @@ def run_backup_and_get_archive() -> tuple[str, str]:
     local_archive = WINDOWS_BACKUP_DIR / archive_name
     if not local_archive.is_file():
         fail(f"Windows server-backup copy is missing: {local_archive}")
-    actual_hash = hashlib.sha256(local_archive.read_bytes()).hexdigest()
+    actual_hash = sha256_path(local_archive)
     if actual_hash.casefold() != expected_hash.casefold():
         fail("Local pre-update backup SHA-256 differs from the backup report.")
     return archive_name, actual_hash
@@ -608,7 +589,10 @@ def update_verify(a: dict[str, Any], plan: dict[str, Any], target: str, server_d
     missing = sorted({p["key"] for p in plan["datapacks"]} - installed_keys)
     if missing:
         raise RuntimeError("Datapack inventory verification missing: " + ", ".join(missing))
-    retired_present = sorted(set(plan["retired_keys"]) & installed_keys)
+    installed_all_keys = installed_keys | {
+        a_key for a_key in (a["pack_key"](name) for name in facts.get("legacy_disabled_datapacks", []))
+    }
+    retired_present = sorted(set(plan["retired_keys"]) & installed_all_keys)
     if retired_present:
         raise RuntimeError("Retired VanillaTweaks packs remain active: " + ", ".join(retired_present))
     errors = facts.get("plugin_errors", [])
@@ -655,17 +639,23 @@ def main() -> None:
     if not plan["plugins"]:
         print("Plugins: no verified replacement required")
     print(f"Datapacks selected: {len(plan['datapacks'])}")
-    print("Datapacks added/updated:")
-    for pack in plan["datapacks"]:
+    print("Datapacks to add/update:")
+    for pack in plan["datapack_changes"]:
         print(f"  {pack['filename']}")
+    print("Already identical:")
+    changed_names = {pack["filename"] for pack in plan["datapack_changes"]}
+    for pack in plan["datapacks"]:
+        if pack["filename"] not in changed_names:
+            print(f"  {pack['filename']}")
     print(f"VanillaTweaks retired without per-pack prompts: {', '.join(plan['retired_keys']) or 'none'}")
-    if not (plan["paper"] or plan["plugins"] or plan["datapacks"]):
-        print("[hagonoy-update] Everything is already current. No backup or server stop is needed.")
+    if not (plan["paper"] or plan["plugins"] or plan["datapack_changes"] or plan["retired_keys"]):
+        print("[hagonoy-update] Paper, plugins and the selected VanillaTweaks datapacks are already current. No backup or server stop is needed.")
         return
 
     stage = make_stage(plan)
     archive_name = ""
     backup_complete = False
+    changes_attempted = False
     try:
         print()
         print("A full, verified pre-update server TAR will be created in both server-backup folders.")
@@ -685,6 +675,7 @@ def main() -> None:
 
         print()
         print("========== APPLY STAGED SERVER UPDATES ==========")
+        changes_attempted = True
         apply_local(host, server_dir, stage, target)
 
         print()
@@ -708,6 +699,13 @@ def main() -> None:
         if backup_complete and archive_name:
             try:
                 state = current_state(a, config, host)
+                if not changes_attempted:
+                    if state == "STOPPED":
+                        print("[hagonoy-update] No server files were changed; restarting the unchanged server.")
+                        lifecycle(host, "start")
+                    else:
+                        print("[hagonoy-update] Update never modified files; leaving the existing host state unchanged.")
+                    raise SystemExit(1)
                 if state == "RUNNING":
                     print("[hagonoy-update] Gracefully stopping the failed updated server before rollback...")
                     lifecycle(host, "stop")
