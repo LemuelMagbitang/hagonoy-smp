@@ -347,10 +347,21 @@ def restore_archive_local(
     ))
     try:
         print("[hagonoy-update] Extracting verified pre-update archive for full rollback...")
-        run_stream(["tar", "-xf", str(archive_path), "-C", str(stage)], timeout=1800)
+        if shutil.which("pv"):
+            run_stream([
+                "bash", "-o", "pipefail", "-c",
+                'pv -s "$1" "$2" | tar -xf - -C "$3"',
+                "hsmp-restore",
+                str(archive_path.stat().st_size),
+                str(archive_path),
+                str(stage),
+            ], timeout=1800)
+        else:
+            print("[hagonoy-update] pv unavailable; extracting with tar (phase-only progress).")
+            run_stream(["tar", "-xf", str(archive_path), "-C", str(stage)], timeout=1800)
         run_stream([
             "rsync", "-rlt", "--no-perms", "--no-owner", "--no-group",
-            "--delete", str(stage) + "/", str(server_dir) + "/",
+            "--info=progress2", "--delete", str(stage) + "/", str(server_dir) + "/",
         ], timeout=1800)
         if not (server_dir / "server.properties").is_file():
             raise RuntimeError("Full rollback copy is missing server.properties.")
@@ -603,7 +614,7 @@ def apply_local(
     try:
         run_stream([
             "rsync", "-rlt", "--no-perms", "--no-owner", "--no-group",
-            "-e", "ssh -T -o BatchMode=yes -o ConnectTimeout=8",
+            "--info=progress2", "-e", "ssh -T -o BatchMode=yes -o ConnectTimeout=8",
             str(stage) + "/", f"{target}:{remote_stage}/",
         ], timeout=600)
 
