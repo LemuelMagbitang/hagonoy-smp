@@ -68,7 +68,7 @@ def config_values() -> tuple[str, str, str, str]:
         '"$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT"'
     )
     output = run(["bash", "-c", code, "bash", str(CONFIG)])
-    values = output.split("\0")
+    values = output.rstrip("\0").split("\0")
     if len(values) != 4 or any(not value for value in values):
         fail("Dual-host configuration is missing a required border-maintenance setting.")
     return tuple(values)  # type: ignore[return-value]
@@ -171,10 +171,12 @@ def display_plan(widths: dict[str, float]) -> None:
         if spec["change_diameter"]:
             action = f"{current:g} -> {spec['diameter']} blocks"
         else:
-            action = f"{current:g} blocks (unchanged)"
+            action = f"{current:g} blocks (must remain unchanged; recorded target {spec['diameter']})"
         print(f"{spec['label']}:")
         print(f"  Current width:  {current:g}")
         print(f"  Target width:   {action}")
+        if not spec["change_diameter"] and current != spec["diameter"]:
+            print("  WARNING: End width differs from the 20,000-block baseline; it will not be changed.")
         print(f"  Center to set:  X {center.split(', ')[0]}, Z {center.split(', ')[1]}")
     print()
     print("Nether center is the Overworld center divided by 8: (-293.625, 4.75).")
