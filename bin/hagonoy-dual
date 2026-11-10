@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="$ROOT/config/dual-host.conf"
+
+log()  { printf '[hagonoy] %s\n' "$*"; }
+die()  { printf '[hagonoy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ -f "$CONFIG" ]] || die "Missing config/dual-host.conf"
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?Missing Windows server path}"
+: "${WINDOWS_BACKUP_DIR:?Missing Windows backup path}"
+: "${WINDOWS_TMUX_SESSION:?Missing Windows TMUX session}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu server path}"
+: "${UBUNTU_BACKUP_DIR:?Missing Ubuntu backup path}"
+: "${UBUNTU_TMUX_SESSION:?Missing Ubuntu TMUX session}"
+: "${MINECRAFT_PORT:?Missing Minecraft port}"
+
+for cmd in ssh tmux tar sha256sum df du awk flock powershell.exe; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing command: $cmd"
+done
+
+[[ -d "$WINDOWS_BACKUP_DIR" ]] || die "Windows backup vault is missing."
+
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8)
+
+remote() {
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$1"
+}
+
+windows_state() {
+    if tmux has-session -t "$WINDOWS_TMUX_SESSION" 2>/dev/null; then
+        echo RUNNING
+        return
+    fi
+
+    local result
+    if ! result="$(powershell.exe -NoProfile -NonInteractive -Command \
+        "\$c=Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue; if (\$c) {'LISTENING'} else {'STOPPED'}" \
+        2>/dev/null | tr -d '\r' | tail -n 1)"; then
+        echo UNKNOWN
+        return
+    fi
+
+    case "$result" in
+        STOPPED) echo STOPPED ;;
+        LISTENING) echo UNKNOWN ;;
+        *) echo UNKNOWN ;;
+    esac
+}
+
+ubuntu_state() {
+    local result
+    if ! result="$(remote \
+        "if tmux has-session -t '$UBUNTU_TMUX_SESSION' 2>/dev/null; then echo RUNNING; elif ss -H -ltn 'sport = :$MINECRAFT_PORT' 2>/dev/null | grep -q .; then echo UNKNOWN; else echo STOPPED; fi")"; then
+        echo UNKNOWN
+        return
+    fi
+    printf '%s\n' "$result"
+}
+
+echo "========== HAGONOY BACKUP PREFLIGHT =========="
+
+remote "test -d '$UBUNTU_SERVER_DIR' &&
+        test -d '$UBUNTU_BACKUP_DIR' &&
+        for c in tmux ss tar sha256sum df du; do command -v \"\$c\" >/dev/null || exit 1; done" ||
+    die "Ubuntu paths or required tools are unavailable."
+
+WINDOWS_STATE="$(windows_state)"
+UBUNTU_STATE="$(ubuntu_state)"
+
+printf 'Windows server: %s\n' "$WINDOWS_STATE"
+printf 'Ubuntu server:  %s\n' "$UBUNTU_STATE"
+
+[[ "$WINDOWS_STATE" != UNKNOWN && "$UBUNTU_STATE" != UNKNOWN ]] ||
+    die "A host is unreachable or its server state is uncertain."
+
+if [[ "$WINDOWS_STATE" == RUNNING && "$UBUNTU_STATE" == RUNNING ]]; then
+    die "Both servers appear to be running. Refusing to continue."
+fi
+
+if [[ "$WINDOWS_STATE" == STOPPED && "$UBUNTU_STATE" == STOPPED ]]; then
+    die "Both servers are stopped. Authoritative-copy detection is not implemented yet."
+fi
+
+if [[ "$UBUNTU_STATE" == RUNNING ]]; then
+    SOURCE=UBUNTU
+    SIZE="$(remote "du -sb -- '$UBUNTU_SERVER_DIR' | awk '{print \$1}'")"
+else
+    SOURCE=WINDOWS
+    [[ -d "$WINDOWS_SERVER_DIR" ]] || die "Windows server directory is missing."
+    SIZE="$(du -sb -- "$WINDOWS_SERVER_DIR" | awk '{print $1}')"
+fi
+
+[[ "$SIZE" =~ ^[0-9]+$ ]] || die "Could not determine server directory size."
+
+WIN_FREE="$(df -Pk "$WINDOWS_BACKUP_DIR" | awk 'NR==2 {print $4}')"
+UBU_FREE="$(remote "df -Pk -- '$UBUNTU_BACKUP_DIR' | awk 'NR==2 {print \$4}'")"
+
+[[ "$WIN_FREE" =~ ^[0-9]+$ && "$UBU_FREE" =~ ^[0-9]+$ ]] ||
+    die "Could not determine free space in both vaults."
+
+NEEDED=$((SIZE + 128 * 1024 * 1024))
+
+(( WIN_FREE * 1024 >= NEEDED )) || die "Insufficient Windows backup space."
+(( UBU_FREE * 1024 >= NEEDED )) || die "Insufficient Ubuntu backup space."
+
+DATE="$(date +%F)"
+NAME=""
+
+for n in $(seq 1 99); do
+    printf -v number '%02d' "$n"
+    candidate="server-backup-$DATE-$number.tar"
+
+    if [[ ! -e "$WINDOWS_BACKUP_DIR/$candidate" &&
+          ! -e "$WINDOWS_BACKUP_DIR/$candidate.part" ]] &&
+       remote "test ! -e '$UBUNTU_BACKUP_DIR/$candidate' &&
+               test ! -e '$UBUNTU_BACKUP_DIR/$candidate.part'"; then
+        NAME="$candidate"
+        break
+    fi
+done
+
+[[ -n "$NAME" ]] || die "No unused backup filename is available."
+
+echo
+echo "========== BACKUP PLAN =========="
+printf 'Active source:       %s\n' "$SOURCE"
+printf 'Estimated size:      %s bytes\n' "$SIZE"
+printf 'Windows destination: %s\n' "$WINDOWS_BACKUP_DIR/$NAME"
+printf 'Ubuntu destination:  %s\n' "$UBUNTU_BACKUP_DIR/$NAME"
+printf 'Windows free:        %s KiB\n' "$WIN_FREE"
+printf 'Ubuntu free:         %s KiB\n' "$UBU_FREE"
+
+log "PLAN ONLY: no server stopped, no archive created, no files transferred."

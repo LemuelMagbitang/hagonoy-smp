@@ -99,8 +99,16 @@ run_scenario() {
     local new_jar="$fixture_dir/new.jar"
     local state_file="$scenario/server.running"
     local api_response="$scenario/paper-api.json"
-    local old_sha new_sha new_size
+    local old_sha new_sha new_size index backup_fixture jar_fixture
     mkdir -p "$mc_dir/logs" "$backup_dir" "$fixture_dir"
+
+    # Seed older recovery artifacts. Successful updates must not prune them.
+    for index in 1 2 3 4; do
+        backup_fixture="$backup_dir/hagonoy-smp-2020010${index}-000000.tar"
+        tar -cf "$backup_fixture" --files-from /dev/null
+        jar_fixture="$mc_dir/server.jar.previous-2020010${index}-000000-build$((50 + index))"
+        : > "$jar_fixture"
+    done
 
     make_jar 61 "$old_jar"
     make_jar 74 "$new_jar"
@@ -215,6 +223,16 @@ CONFIG
             printf '[FAIL] %s scenario: previous JAR was not retained\n' "$name" >&2
             return 1
         }
+
+        for index in 1 2 3 4; do
+            jar_fixture="$mc_dir/server.jar.previous-2020010${index}-000000-build$((50 + index))"
+            [[ -f "$jar_fixture" ]] || {
+                printf '[FAIL] %s scenario: existing previous JAR was deleted: %s\n' "$name" "$jar_fixture" >&2
+                return 1
+            }
+        done
+        printf '[OK] Existing previous Paper JARs are preserved; no automatic pruning\n'
+
         local backup
         backup="$(find "$backup_dir" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' | head -n 1)"
         [[ -n "$backup" ]] && tar -tf "$backup" >/dev/null || {
@@ -227,6 +245,15 @@ CONFIG
         }
         printf '[OK] Stable Paper update verifies JAR, backs up, preserves old JAR and starts new build\n'
     fi
+
+    for index in 1 2 3 4; do
+        backup_fixture="$backup_dir/hagonoy-smp-2020010${index}-000000.tar"
+        [[ -f "$backup_fixture" ]] || {
+            printf '[FAIL] %s scenario: existing backup archive was deleted: %s\n' "$name" "$backup_fixture" >&2
+            return 1
+        }
+    done
+    printf '[OK] Existing backup archives are preserved; no automatic pruning\n'
 }
 
 run_scenario "success" "false"

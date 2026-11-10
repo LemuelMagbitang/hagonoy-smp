@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+
+die() {
+    printf '[hagonoy-generation] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ -f "$CONFIG" ]] || die "Missing dual-host configuration: $CONFIG"
+[[ -f "$HELPER" ]] || die "Missing generation helper: $HELPER"
+
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?Missing Windows server directory}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu server directory}"
+
+for cmd in ssh python3 mktemp; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd"
+done
+
+[[ $# -eq 0 ]] || die "Usage: ./hagonoy dual-generation"
+
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8)
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+
+HARD_ERROR=0
+
+validate_directory() {
+    local directory="$1"
+    local error_file="$2"
+
+    python3 "$HELPER" show "$directory" \
+        >/dev/null 2>"$error_file"
+}
+
+show_manifest_summary() {
+    local host="$1"
+    local manifest="$2"
+
+    python3 - "$manifest" "$host" <<'PY'
+import json
+import sys
+
+path, label = sys.argv[1], sys.argv[2]
+
+with open(path, encoding="utf-8") as stream:
+    data = json.load(stream)
+
+print(f"  Generation:      {data['generation']}")
+print(f"  Generation ID:   {data['generation_id'][:12]}...")
+print(f"  State:           {data['state'].upper()}")
+print(f"  Recorded host:   {data.get('host', 'unknown')}")
+print(f"  Paper version:   {data.get('paper_version', 'unknown')}")
+print(f"  Minecraft:       {data.get('minecraft_version', 'unknown')}")
+PY
+}
+
+echo "========== HAGONOY GENERATION DISCOVERY =========="
+echo "Read-only inspection of canonical server directories."
+echo
+
+# ------------------------------------------------------------
+# 1. Inspect Windows canonical server.
+#    Staging is deliberately excluded.
+# ------------------------------------------------------------
+
+WINDOWS_STATUS=""
+WINDOWS_MANIFEST="$WINDOWS_SERVER_DIR/.hagonoy-generation.json"
+
+if [[ ! -d "$WINDOWS_SERVER_DIR" ]]; then
+    WINDOWS_STATUS="DIRECTORY_MISSING"
+elif [[ ! -f "$WINDOWS_MANIFEST" ]]; then
+    WINDOWS_STATUS="MANIFEST_MISSING"
+elif validate_directory "$WINDOWS_SERVER_DIR" "$TMP_DIR/windows-validation.err"; then
+    WINDOWS_STATUS="VALID"
+else
+    WINDOWS_STATUS="INVALID"
+    HARD_ERROR=1
+fi
+
+# ------------------------------------------------------------
+# 2. Check whether Ubuntu is reachable over SSH.
+#    Do not interpret an SSH failure as a missing directory.
+# ------------------------------------------------------------
+
+UBUNTU_STATUS=""
+UBUNTU_MANIFEST=""
+
+if "${SSH[@]}" "$UBUNTU_SSH_TARGET" true \
+    >/dev/null 2>"$TMP_DIR/ubuntu-probe.err"; then
+
+    # Quote the remote path for the remote POSIX shell.
+    REMOTE_DIR_ARG="$(
+        python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' \
+            "$UBUNTU_SERVER_DIR"
+    )"
+
+    REMOTE_RC=0
+
+    if REMOTE_OUTPUT="$(
+        "${SSH[@]}" "$UBUNTU_SSH_TARGET" "sh -s -- $REMOTE_DIR_ARG" \
+            2>"$TMP_DIR/ubuntu-read.err" <<'REMOTE'
+set -u
+
+server_dir=$1
+manifest="$server_dir/.hagonoy-generation.json"
+
+printf '__HAGONOY_REMOTE_OK__\n'
+
+if [ ! -d "$server_dir" ]; then
+    printf 'DIRECTORY_MISSING\n'
+    exit 0
+fi
+
+if [ ! -f "$manifest" ]; then
+    printf 'MANIFEST_MISSING\n'
+    exit 0
+fi
+
+if [ ! -r "$manifest" ]; then
+    printf 'MANIFEST_UNREADABLE\n'
+    exit 0
+fi
+
+printf 'MANIFEST_PRESENT\n'
+cat "$manifest"
+REMOTE
+    )"; then
+        REMOTE_RC=0
+    else
+        REMOTE_RC=$?
+    fi
+
+    # Parse the protocol marker and status separately from manifest JSON.
+    if [[ "$REMOTE_OUTPUT" == *$'\n'* ]]; then
+        REMOTE_HEADER="${REMOTE_OUTPUT%%$'\n'*}"
+        REMOTE_REST="${REMOTE_OUTPUT#*$'\n'}"
+    else
+        REMOTE_HEADER="$REMOTE_OUTPUT"
+        REMOTE_REST=""
+    fi
+
+    if [[ "$REMOTE_HEADER" != "__HAGONOY_REMOTE_OK__" ]]; then
+        UBUNTU_STATUS="REMOTE_COMMAND_ERROR"
+        HARD_ERROR=1
+    elif (( REMOTE_RC != 0 )); then
+        UBUNTU_STATUS="REMOTE_READ_ERROR"
+        HARD_ERROR=1
+    else
+        if [[ "$REMOTE_REST" == *$'\n'* ]]; then
+            REMOTE_STATUS="${REMOTE_REST%%$'\n'*}"
+            REMOTE_MANIFEST="${REMOTE_REST#*$'\n'}"
+        else
+            REMOTE_STATUS="$REMOTE_REST"
+            REMOTE_MANIFEST=""
+        fi
+
+        case "$REMOTE_STATUS" in
+            DIRECTORY_MISSING)
+                UBUNTU_STATUS="DIRECTORY_MISSING"
+                ;;
+            MANIFEST_MISSING)
+                UBUNTU_STATUS="MANIFEST_MISSING"
+                ;;
+            MANIFEST_UNREADABLE)
+                UBUNTU_STATUS="MANIFEST_UNREADABLE"
+                HARD_ERROR=1
+                ;;
+            MANIFEST_PRESENT)
+                mkdir -p "$TMP_DIR/ubuntu-snapshot"
+                UBUNTU_MANIFEST="$TMP_DIR/ubuntu-snapshot/.hagonoy-generation.json"
+                printf '%s\n' "$REMOTE_MANIFEST" > "$UBUNTU_MANIFEST"
+
+                if validate_directory "$TMP_DIR/ubuntu-snapshot" \
+                    "$TMP_DIR/ubuntu-validation.err"; then
+                    UBUNTU_STATUS="VALID"
+                else
+                    UBUNTU_STATUS="INVALID"
+                    HARD_ERROR=1
+                fi
+                ;;
+            *)
+                UBUNTU_STATUS="REMOTE_PROTOCOL_ERROR"
+                HARD_ERROR=1
+                ;;
+        esac
+    fi
+else
+    UBUNTU_STATUS="SSH_UNAVAILABLE"
+    HARD_ERROR=1
+fi
+
+# ------------------------------------------------------------
+# 3. Report discovery results.
+# ------------------------------------------------------------
+
+echo "WINDOWS CANONICAL: $WINDOWS_STATUS"
+echo "  Directory: $WINDOWS_SERVER_DIR"
+
+if [[ "$WINDOWS_STATUS" == "VALID" ]]; then
+    show_manifest_summary "WINDOWS" "$WINDOWS_MANIFEST"
+elif [[ "$WINDOWS_STATUS" == "INVALID" ]]; then
+    sed 's/^/  /' "$TMP_DIR/windows-validation.err"
+fi
+
+echo
+echo "UBUNTU CANONICAL: $UBUNTU_STATUS"
+echo "  Directory: $UBUNTU_SERVER_DIR"
+
+if [[ "$UBUNTU_STATUS" == "VALID" ]]; then
+    show_manifest_summary "UBUNTU" "$UBUNTU_MANIFEST"
+elif [[ "$UBUNTU_STATUS" == "INVALID" ]]; then
+    sed 's/^/  /' "$TMP_DIR/ubuntu-validation.err"
+elif [[ "$UBUNTU_STATUS" == "SSH_UNAVAILABLE" ]]; then
+    echo "  SSH could not connect or authenticate."
+    echo "  Check network access, SSH keys, and host-key verification."
+    sed -n '1,3p' "$TMP_DIR/ubuntu-probe.err" | sed 's/^/  /'
+elif [[ "$UBUNTU_STATUS" == "REMOTE_READ_ERROR" ||
+        "$UBUNTU_STATUS" == "REMOTE_COMMAND_ERROR" ]]; then
+    sed -n '1,3p' "$TMP_DIR/ubuntu-read.err" | sed 's/^/  /'
+fi
+
+# ------------------------------------------------------------
+# 4. Compare only when BOTH canonical manifests are valid.
+# ------------------------------------------------------------
+
+echo
+echo "========== GENERATION COMPARISON =========="
+
+if [[ "$WINDOWS_STATUS" == "VALID" &&
+      "$UBUNTU_STATUS" == "VALID" ]]; then
+
+    if COMPARISON="$(
+        python3 "$HELPER" select \
+            "$TMP_DIR/ubuntu-snapshot" \
+            "$WINDOWS_SERVER_DIR" 2>&1
+    )"; then
+        printf '%s\n' "$COMPARISON"
+    else
+        printf '%s\n' "$COMPARISON" | sed 's/^/  /'
+        echo "RESULT=NO_SAFE_WINNER"
+        HARD_ERROR=1
+    fi
+
+    echo "Lineage comparison does not prove byte-for-byte file equality."
+else
+    echo "RESULT=AUTHORITY_NOT_ESTABLISHED"
+    echo "Both canonical hosts need valid manifests before comparison."
+fi
+
+echo
+echo "Read-only check complete. No server files or manifests were changed."
+
+exit "$HARD_ERROR"

@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+
+die() {
+    printf '[hagonoy-lifecycle] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ -f "$CONFIG" ]] || die "Missing dual-host configuration: $CONFIG"
+[[ -f "$HELPER" ]] || die "Missing generation helper: $HELPER"
+
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${WINDOWS_TMUX_SESSION:?Missing Windows tmux session}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu server directory}"
+: "${UBUNTU_TMUX_SESSION:?Missing Ubuntu tmux session}"
+: "${MINECRAFT_PORT:?Missing Minecraft port}"
+: "${BEDROCK_PORT:?Missing Bedrock port}"
+
+READY_PATTERN="${READY_PATTERN:-Done}"
+START_TIMEOUT_SECONDS="${START_TIMEOUT_SECONDS:-900}"
+STOP_TIMEOUT_SECONDS="${STOP_TIMEOUT_SECONDS:-180}"
+
+if [[ $# -eq 1 && ( "$1" == "start" || "$1" == "stop" ) ]]; then
+    ACTION="$1"
+    UPDATE_MODE=""
+elif [[ $# -eq 2 && "$1" == "update" &&
+        ( "$2" == "--plan" || "$2" == "--execute" ) ]]; then
+    ACTION="update"
+    UPDATE_MODE="$2"
+else
+    die "Usage: hagonoy-dual-lifecycle start|stop|update --plan|--execute"
+fi
+
+for cmd in ssh python3 mktemp tmux powershell.exe tee; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        die "Missing required command: $cmd"
+done
+
+[[ "$MINECRAFT_PORT" =~ ^[0-9]+$ ]] &&
+    (( MINECRAFT_PORT >= 1 && MINECRAFT_PORT <= 65535 )) ||
+    die "Invalid Minecraft port."
+
+[[ "$BEDROCK_PORT" =~ ^[0-9]+$ ]] &&
+    (( BEDROCK_PORT >= 1 && BEDROCK_PORT <= 65535 )) ||
+    die "Invalid Bedrock port."
+
+[[ "$START_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] &&
+    (( START_TIMEOUT_SECONDS > 0 )) ||
+    die "Invalid startup timeout."
+
+[[ "$STOP_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] &&
+    (( STOP_TIMEOUT_SECONDS > 0 )) ||
+    die "Invalid shutdown timeout."
+
+[[ -n "$READY_PATTERN" ]] || die "READY_PATTERN cannot be empty."
+
+SSH=(ssh -T -o BatchMode=yes -o ConnectTimeout=8)
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+
+check_windows_canonical_stopped() {
+    echo "========== WINDOWS CANONICAL SAFETY CHECK =========="
+
+    # The Windows canonical tmux session is controlled from WSL.
+    if tmux has-session -t "=$WINDOWS_TMUX_SESSION" 2>/dev/null; then
+        die "Windows canonical tmux session '$WINDOWS_TMUX_SESSION' exists. Refusing Ubuntu lifecycle operation."
+    fi
+
+    local ps_command raw tcp udp
+
+    ps_command="\$tcp = @(Get-NetTCPConnection -State Listen -LocalPort $MINECRAFT_PORT -ErrorAction SilentlyContinue).Count
+\$udp = @(Get-NetUDPEndpoint -LocalPort $BEDROCK_PORT -ErrorAction SilentlyContinue).Count
+'JAVA_TCP=' + \$tcp
+'BEDROCK_UDP=' + \$udp"
+
+    if ! raw="$(
+        powershell.exe -NoProfile -NonInteractive \
+            -Command "$ps_command" \
+            2>"$TMP_DIR/windows-powershell.err" |
+            tr -d '\r'
+    )"; then
+        sed -n '1,5p' "$TMP_DIR/windows-powershell.err" >&2 || true
+        die "Could not establish Windows canonical listener state."
+    fi
+
+    tcp="$(printf '%s\n' "$raw" | awk -F= '$1=="JAVA_TCP"{print $2}')"
+    udp="$(printf '%s\n' "$raw" | awk -F= '$1=="BEDROCK_UDP"{print $2}')"
+
+    [[ "$tcp" =~ ^[0-9]+$ && "$udp" =~ ^[0-9]+$ ]] ||
+        die "Windows PowerShell returned an incomplete listener report."
+
+    printf 'WINDOWS_JAVA_TCP_LISTENERS=%s\n' "$tcp"
+    printf 'WINDOWS_BEDROCK_UDP_ENDPOINTS=%s\n' "$udp"
+
+    (( tcp == 0 && udp == 0 )) ||
+        die "Windows canonical has an active listener. Refusing to operate on Ubuntu."
+}
+
+build_remote_command() {
+    local action="$1"
+
+    python3 - \
+        "$action" \
+        "$UBUNTU_SERVER_DIR" \
+        "$UBUNTU_TMUX_SESSION" \
+        "$MINECRAFT_PORT" \
+        "$READY_PATTERN" \
+        "$START_TIMEOUT_SECONDS" \
+        "$STOP_TIMEOUT_SECONDS" \
+        "$UPDATE_MODE" <<'PY'
+import shlex
+import sys
+
+action, directory, session, port, ready, start_timeout, stop_timeout, update_mode = sys.argv[1:]
+
+code = (
+    'import sys; '
+    'exec(compile(sys.stdin.read(), "hagonoy-generation", "exec"))'
+)
+
+argv = [
+    "flock", "-n", "/tmp/hagonoy-smp-lifecycle.lock",
+    "python3", "-c", code
+]
+
+if action == "start":
+    argv += [
+        "start-server", directory,
+        "--session", session,
+        "--port", port,
+        "--ready-pattern", ready,
+        "--timeout", start_timeout
+    ]
+elif action == "stop":
+    argv += [
+        "stop-server", directory,
+        "--session", session,
+        "--port", port,
+        "--timeout", stop_timeout
+    ]
+elif action == "update":
+    argv += [
+        "paper-update", directory,
+        "--session", session,
+        "--port", port,
+        "--ready-pattern", ready,
+        "--start-timeout", start_timeout,
+        "--stop-timeout", stop_timeout,
+        "--user-agent",
+        "HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)",
+        update_mode
+    ]
+else:
+    raise SystemExit("Unsupported lifecycle action.")
+
+print(" ".join(shlex.quote(arg) for arg in argv))
+PY
+}
+
+run_remote_helper() {
+    local remote_command
+
+    remote_command="$(build_remote_command "$ACTION")" ||
+        die "Could not construct the remote command."
+
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_command" < "$HELPER"
+}
+
+verify_readback() {
+    local expected_state="$1"
+    local manifest_path remote_cat_command
+
+    manifest_path="${UBUNTU_SERVER_DIR%/}/.hagonoy-generation.json"
+
+    remote_cat_command="$(
+        python3 - "$manifest_path" <<'PY'
+import shlex
+import sys
+print("cat -- " + shlex.quote(sys.argv[1]))
+PY
+    )" || die "Could not construct manifest read-back command."
+
+    echo
+    echo "========== INDEPENDENT MANIFEST READ-BACK =========="
+
+    if ! "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_cat_command" \
+        > "$TMP_DIR/manifest.json"; then
+        die "Could not retrieve the Ubuntu generation manifest. Inspect the server before retrying."
+    fi
+
+    mkdir -p "$TMP_DIR/snapshot"
+    cp "$TMP_DIR/manifest.json" "$TMP_DIR/snapshot/.hagonoy-generation.json"
+
+    if ! python3 "$HELPER" show "$TMP_DIR/snapshot" \
+        > "$TMP_DIR/validated.json"; then
+        die "Ubuntu generation manifest failed local validation."
+    fi
+
+    python3 - \
+        "$TMP_DIR/validated.json" \
+        "$TMP_DIR/operation.log" \
+        "$expected_state" "$ACTION" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest_path, operation_path, expected_state, action = sys.argv[1:]
+
+data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+operation = Path(operation_path).read_text(encoding="utf-8")
+
+if data.get("host") != "ubuntu":
+    raise SystemExit("Read-back manifest has an unexpected host.")
+if data.get("state") != expected_state:
+    raise SystemExit(
+        f"Expected state {expected_state}, found {data.get('state')}."
+    )
+
+ids = re.findall(r"^GENERATION_ID=(.+)$", operation, re.MULTILINE)
+if not ids:
+    raise SystemExit("Lifecycle output did not include a generation ID.")
+if ids[-1] != data.get("generation_id"):
+    raise SystemExit("Lifecycle output and manifest read-back generation IDs differ.")
+
+if expected_state == "running":
+    if action == "update":
+        if not (
+            "PAPER_UPDATE=SUCCESS" in operation
+            or "PAPER_UPDATE=ALREADY_CURRENT" in operation
+        ):
+            raise SystemExit("No confirmed Paper update result was reported.")
+    elif not (
+        "SERVER_ALREADY_RUNNING" in operation
+        or "START=READY" in operation
+    ):
+        raise SystemExit("No confirmed running result was reported.")
+else:
+    if not (
+        "SERVER_ALREADY_STOPPED" in operation
+        or "STOP=CONFIRMED" in operation
+    ):
+        raise SystemExit("No confirmed stopped result was reported.")
+
+print("READBACK=VERIFIED")
+print(f"HOST={data['host']}")
+print(f"GENERATION={data['generation']}")
+print(f"GENERATION_ID={data['generation_id']}")
+print(f"STATE={data['state'].upper()}")
+print(f"PAPER_VERSION={data['paper_version']}")
+print(f"MINECRAFT_VERSION={data['minecraft_version']}")
+PY
+}
+
+case "$ACTION" in
+    start)
+        echo "========== DUAL-HOST START =========="
+        echo "Target: Ubuntu canonical server"
+        echo "Windows staging is excluded."
+        check_windows_canonical_stopped
+        expected_state="running"
+        ;;
+    stop)
+        echo "========== DUAL-HOST GRACEFUL STOP =========="
+        echo "Target: Ubuntu canonical server"
+        echo "Windows staging is excluded."
+        check_windows_canonical_stopped
+        expected_state="stopped"
+        ;;
+    update)
+        echo "========== DUAL-HOST PAPER UPDATE =========="
+        echo "Mode: $UPDATE_MODE"
+        echo "Target: Ubuntu canonical server"
+        echo "Minecraft version will remain unchanged."
+        echo "Windows staging is excluded."
+        check_windows_canonical_stopped
+        expected_state="running"
+        ;;
+esac
+
+if [[ "$ACTION" == "update" && "$UPDATE_MODE" == "--execute" ]]; then
+    [[ -t 0 && -r /dev/tty ]] ||
+        die "Paper update execution requires an interactive terminal."
+
+    echo
+    echo "This will download and verify a stable Paper build for the current Minecraft version."
+    echo "It will gracefully stop and restart Ubuntu Minecraft."
+    echo "The previous server.jar will be retained for rollback."
+    echo "No TAR backup or plugin/config update will be performed."
+    printf 'To authorize this update, type UPDATE-UBUNTU-PAPER: '
+    IFS= read -r confirmation < /dev/tty
+
+    [[ "$confirmation" == "UPDATE-UBUNTU-PAPER" ]] ||
+        die "Confirmation did not match. No update was started."
+fi
+
+echo
+echo "========== REMOTE LIFECYCLE OPERATION =========="
+echo "Action: $ACTION"
+echo "Target: $UBUNTU_SSH_TARGET:$UBUNTU_SERVER_DIR"
+echo "Remote lock: /tmp/hagonoy-smp-lifecycle.lock"
+
+if run_remote_helper | tee "$TMP_DIR/operation.log"; then
+    :
+else
+    rc=$?
+    die "Remote lifecycle operation failed (exit $rc). No automatic force-kill or state rollback was attempted."
+fi
+
+if [[ "$ACTION" == "update" && "$UPDATE_MODE" == "--plan" ]]; then
+    grep -Fq "RESULT=READY_FOR_PAPER_UPDATE" "$TMP_DIR/operation.log" ||
+        die "Paper update plan did not reach its ready result."
+    echo
+    echo "PAPER_UPDATE_PLAN=READY"
+    echo "No manifest change or server restart was performed."
+    exit 0
+fi
+
+verify_readback "$expected_state"
+
+echo
+echo "========== LIFECYCLE OPERATION COMPLETE =========="
