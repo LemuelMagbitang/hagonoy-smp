@@ -426,9 +426,12 @@ def main() -> None:
             print(f"  REPLACE DISABLED COPY: {legacy[key]} -> active {pack['filename']}")
         else:
             print(f"  ADD: {pack['filename']}")
-    removed = sorted(
-        name for key, name in legacy.items() if key not in primary
-    )
+    retired: dict[str, str] = {}
+    for previous in (active, legacy):
+        for key, name in previous.items():
+            if key not in primary:
+                retired[key] = name
+    removed = sorted(retired.values(), key=str.casefold)
     if removed:
         print("  RETIRED from your new selection (no prompt; archived in the pre-update backup):")
         for name in removed:
@@ -441,7 +444,7 @@ def main() -> None:
         print("All selected datapacks declare compatibility with Minecraft 26.3 data-pack format 121.0.")
     print()
     print("[hagonoy] INVENTORY ONLY. No download, server file, plugin, datapack, or world data was changed.")
-    print("[hagonoy] The updater will use the UNZIP_ME bundle as the desired set; absent old packs are retired automatically, not prompted one-by-one.")
+    print("[hagonoy] The updater will use the UNZIP_ME bundle as the desired set; old active and disabled ZIPs absent from it are retired automatically, not prompted one-by-one.")
 
 
 if __name__ == "__main__":
