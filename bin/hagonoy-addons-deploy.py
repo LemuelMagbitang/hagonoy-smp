@@ -324,18 +324,23 @@ def safe_archive_members(archive_path: Path) -> None:
 
 
 def locked_restore_archive_local(
-    archive_path: Path, server_dir: Path, host: str, session: str, port: str
+    archive_path: Path, server_dir: Path, host: str, session: str, port: str,
+    expected_sha256: str | None = None,
 ) -> None:
     def operation() -> None:
         assert_runtime_stopped(host, session, port)
-        restore_archive_local(archive_path, server_dir)
+        restore_archive_local(archive_path, server_dir, expected_sha256)
 
     with_maintenance_lock(host, operation)
 
 
-def restore_archive_local(archive_path: Path, server_dir: Path) -> None:
+def restore_archive_local(
+    archive_path: Path, server_dir: Path, expected_sha256: str | None = None
+) -> None:
     server_dir = server_dir.resolve(strict=True)
     archive_path = archive_path.resolve(strict=True)
+    if expected_sha256 and sha256_path(archive_path).casefold() != expected_sha256.casefold():
+        raise RuntimeError("Rollback TAR SHA-256 no longer matches the verified pre-update archive.")
     safe_archive_members(archive_path)
     stage = Path(tempfile.mkdtemp(
         prefix=".hagonoy-full-restore-", dir=str(server_dir.parent)
@@ -625,7 +630,7 @@ def lifecycle(host: str, action: str) -> None:
 def restore_archive(
     host: str, server_dir: str, target: str, archive_name: str,
     windows_backup_dir: str, ubuntu_backup_dir: str,
-    config: tuple[str, ...],
+    config: tuple[str, ...], expected_sha256: str,
 ) -> None:
     win_session, _target, _ubuntu_dir, _windows_dir, ubu_session, port, _win_backup, _ubu_backup = config
     session = ubu_session if host == "UBUNTU" else win_session
@@ -634,14 +639,16 @@ def restore_archive(
         archive = Path(windows_backup_dir) / archive_name
         if not archive.is_file():
             raise RuntimeError(f"Verified Windows rollback archive is missing: {archive}")
-        locked_restore_archive_local(archive, Path(server_dir), host_key, session, port)
+        locked_restore_archive_local(
+            archive, Path(server_dir), host_key, session, port, expected_sha256
+        )
         return
 
     remote_archive = str(Path(ubuntu_backup_dir) / archive_name)
     command = [
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
         target, "python3", "-", "--remote-restore", server_dir, remote_archive,
-        host_key, session, port,
+        host_key, session, port, expected_sha256,
     ]
     run(command, input_text=Path(__file__).read_text(encoding="utf-8"), timeout=2400)
 
@@ -652,6 +659,15 @@ def current_state(a: dict[str, Any], config: tuple[str, ...], host: str) -> str:
         a["ubuntu_state"](target, ubu_session, port)
         if host == "UBUNTU"
         else a["windows_state"](win_session, port)
+    )
+
+
+def other_state(a: dict[str, Any], config: tuple[str, ...], host: str) -> str:
+    win_session, target, _ubuntu_dir, _windows_dir, ubu_session, port, _win_backup_dir, _ubu_backup_dir = config
+    return (
+        a["windows_state"](win_session, port)
+        if host == "UBUNTU"
+        else a["ubuntu_state"](target, ubu_session, port)
     )
 
 
@@ -718,10 +734,10 @@ def main() -> None:
     if len(sys.argv) == 7 and sys.argv[1] == "--remote-apply":
         locked_apply_staged_changes(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6])
         return
-    if len(sys.argv) == 7 and sys.argv[1] == "--remote-restore":
+    if len(sys.argv) == 8 and sys.argv[1] == "--remote-restore":
         server_dir = Path(sys.argv[2]).resolve(strict=True)
         archive_path = Path(sys.argv[3]).resolve(strict=True)
-        locked_restore_archive_local(archive_path, server_dir, sys.argv[4], sys.argv[5], sys.argv[6])
+        locked_restore_archive_local(archive_path, server_dir, sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7])
         return
     if len(sys.argv) != 2 or sys.argv[1] != "--execute":
         fail("Usage: ./hagonoy update --execute")
@@ -814,16 +830,28 @@ def main() -> None:
         print(f"Retired VanillaTweaks packs: {len(plan['retired_keys'])}")
     except Exception as exc:
         print(f"[hagonoy-update] UPDATE FAILED: {exc}", file=sys.stderr)
+        if not changes_attempted:
+            try:
+                state = current_state(a, config, host)
+                other = other_state(a, config, host)
+                if state == "STOPPED" and other == "STOPPED":
+                    print("[hagonoy-update] No server files were changed; restarting the unchanged authoritative server.")
+                    lifecycle(host, "start")
+                elif state == "STOPPED":
+                    print(
+                        "[hagonoy-update] The source remains stopped because the secondary host is "
+                        f"{other}; refusing a possible split-brain restart. No server files were changed.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print("[hagonoy-update] No update files were changed; current host state is retained.")
+            except Exception as recovery_error:
+                print(f"[hagonoy-update] Could not safely recover pre-update host state: {recovery_error}", file=sys.stderr)
+            raise SystemExit(1)
+
         if backup_complete and archive_name:
             try:
                 state = current_state(a, config, host)
-                if not changes_attempted:
-                    if state == "STOPPED":
-                        print("[hagonoy-update] No server files were changed; restarting the unchanged server.")
-                        lifecycle(host, "start")
-                    else:
-                        print("[hagonoy-update] Update never modified files; leaving the existing host state unchanged.")
-                    raise SystemExit(1)
                 if state == "RUNNING":
                     print("[hagonoy-update] Gracefully stopping the failed updated server before rollback...")
                     lifecycle(host, "stop")
@@ -833,7 +861,7 @@ def main() -> None:
                     print(f"[hagonoy-update] Verified rollback archive retained: {archive_name}", file=sys.stderr)
                     raise SystemExit(1)
                 print("[hagonoy-update] Restoring the complete pre-update server from server-backup...")
-                restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir, config)
+                restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir, config, archive_hash)
                 lifecycle(host, "start")
                 if current_state(a, config, host) != "RUNNING":
                     raise RuntimeError("Original server files restored but previous server did not confirm readiness.")
