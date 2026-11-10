@@ -99,6 +99,7 @@ with tempfile.TemporaryDirectory(prefix="hsmp-paper-test-") as tmp:
         assert not verified and "latest stable is 245" in detail
 
         expected["downloads"]["server:default"]["checksums"]["sha256"] = "0" * 64
+        urllib.request.urlopen = lambda request, timeout=20: io.BytesIO(json.dumps([expected]).encode())
         verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
         assert not verified and "SHA-256 mismatch" in detail
     finally:
