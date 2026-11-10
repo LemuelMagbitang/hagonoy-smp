@@ -159,7 +159,34 @@ Keep `PAPER_JAR` aligned with the JAR referenced by your configured startup scri
 
 The checker/updater requires `curl`, `jq`, `sha256sum`, and Python 3. Python's standard ZIP library verifies the downloaded JAR structure without requiring a full JDK `jar` utility. The repository installer adds `curl`, `jq`, and Python 3; Java itself is managed separately.
 
-## 9. Playit.gg (optional)
+## 9. HSMP maintenance: world borders and addon inventory
+
+The WSL dual-host coordinator includes a read-only world-border plan:
+
+```bash
+./hagonoy border --plan
+```
+
+The approved targets are full border diameters, not radii: Overworld 12,500 centered at X=-2349, Z=38; Nether 3,125 centered at X=-293.625, Z=4.75; and End diameter unchanged (the recorded baseline is 20,000) centered at X=0, Z=0. The Nether center is the Overworld center divided by eight. The End diameter is never set by this command.
+
+To apply the Overworld and Nether expansion and set all three centers:
+
+```bash
+./hagonoy border --apply
+```
+
+The command checks which canonical host is running and reads all three current diameters. It refuses uncertain or dual-running host states and refuses to shrink an Overworld or Nether border that is already wider than its target. It then requires the exact interactive phrase `APPLY HSMP BORDER 12500 3125 KEEP-END`, applies dimension-specific commands, and verifies the resulting diameters. The End diameter is queried before and after and must remain unchanged. Border application does not restart Minecraft.
+
+The addon inventory is read-only:
+
+```bash
+./hagonoy addons --plan
+```
+
+It lists every file in `D:\Hagonoy-SMP\server-update-downloads`, compares downloaded Paper/plugin metadata with the installed server, and inspects the nested datapack ZIPs in `VanillaTweaks_d831085_UNZIP_ME.zip`. That `UNZIP_ME` bundle is the authoritative selected set; `VanillaTweaks-26.3.zip` is displayed for comparison only and is not merged into the selected set. This prevents packs omitted from the selected bundle from being re-added from the secondary ZIP. The inventory checks each nested `pack.mcmeta` against Minecraft 26.3 data-pack format 121.0.
+
+The addon command currently reports the plan only. It does not change Paper, plugins, datapacks, or server files. Deployment is not enabled until the staged update and rollback path has been tested.
+## 10. Playit.gg (optional)
 
 On Ubuntu, installing Playit through its APT package can create a systemd service named `playit.service` that runs the agent in the background. Check it with:
 
@@ -185,7 +212,7 @@ When no Playit service or process is active, manual Hagonoy controls are availab
 
 Do not upload Playit credentials or agent configuration. Hagonoy does not manage website tunnel assignments or transfer tunnels between agents.
 
-## 10. Updating the manager
+## 11. Updating the manager
 
 After cloning and pushing the project to GitHub, update only the manager checkout with:
 
@@ -195,17 +222,17 @@ After cloning and pushing the project to GitHub, update only the manager checkou
 
 It refuses to pull if local manager files have uncommitted changes and uses `git pull --ff-only`. This command does not update Minecraft itself.
 
-## Recovery and safety
+## 12. Recovery and safety
 
 - Never copy or synchronize a live world directory while Minecraft is writing to it.
 - Never run the server simultaneously from the Ubuntu laptop and Windows copy if both point to independently edited worlds.
 - Before changing server versions, Java versions, loaders, or plugins, take a backup and verify compatibility.
 - Do not delete the old Minecraft directory until the new manager has started the intended world and a separate backup has been verified.
 
-## Hardware notes
+## 13. Hardware notes
 
 The ASUS laptop has 2 GB RAM and an older Intel Celeron N3060. This manager itself has a very small resource footprint, but Minecraft's Java heap and server software determine most of the load. Do not blindly copy memory flags from another machine or a different Minecraft version. Confirm the actual Minecraft version, server type (Vanilla/Paper/Spigot/Fabric/Forge/etc.), and current `start.sh` before changing Java flags.
 
-## Current scope / later work
+## 14. Current scope / later work
 
 Version 1 is intentionally a single-host Ubuntu manager. Once its paths and startup behaviour are verified, remote backup to the Windows PC or another storage device can be added as a separate, explicit backup target. That avoids bringing back the old scripts' dangerous active-server detection and overwrite behaviour prematurely.
