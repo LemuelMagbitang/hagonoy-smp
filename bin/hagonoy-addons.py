@@ -50,7 +50,7 @@ def config_values() -> tuple[str, str, str, str, str, str]:
         'printf "%s\\0" "$WINDOWS_TMUX_SESSION" "$UBUNTU_SSH_TARGET" '
         '"$UBUNTU_SERVER_DIR" "$WINDOWS_SERVER_DIR" "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT"'
     )
-    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\\0").split("\\0")
+    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\0").split("\0")
     if len(values) != 6 or any(not value for value in values):
         fail("Dual-host configuration is missing server or connection details.")
     return tuple(values)
@@ -236,7 +236,7 @@ def windows_state(session: str, port: str) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         return "UNKNOWN"
-    port_state = result.stdout.strip().replace("\\r", "") if result.returncode == 0 else "UNKNOWN"
+    port_state = result.stdout.strip().replace("\r", "") if result.returncode == 0 else "UNKNOWN"
     if session_running and port_state == "LISTENING":
         return "RUNNING"
     if not session_running and port_state == "STOPPED":
