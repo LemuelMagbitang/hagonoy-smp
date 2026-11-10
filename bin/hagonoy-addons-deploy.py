@@ -539,7 +539,7 @@ def restore_archive(
 
 
 def current_state(a: dict[str, Any], config: tuple[str, ...], host: str) -> str:
-    win_session, target, _ubuntu_dir, _windows_dir, ubu_session, port = config
+    win_session, target, _ubuntu_dir, _windows_dir, ubu_session, port, _win_backup_dir, _ubu_backup_dir = config
     return (
         a["ubuntu_state"](target, ubu_session, port)
         if host == "UBUNTU"
@@ -547,7 +547,7 @@ def current_state(a: dict[str, Any], config: tuple[str, ...], host: str) -> str:
     )
 
 
-def run_backup_and_get_archive() -> tuple[str, str]:
+def run_backup_and_get_archive(windows_backup_dir: str) -> tuple[str, str]:
     plan = subprocess.run(
         [str(BACKUP_SCRIPT), "--plan"],
         text=True, capture_output=True, check=False,
@@ -562,7 +562,7 @@ def run_backup_and_get_archive() -> tuple[str, str]:
     if not match_name or not match_hash:
         fail("Backup command did not report a verified archive name and SHA-256.")
     archive_name, expected_hash = match_name[-1], match_hash[-1]
-    local_archive = Path(os.environ.get("WINDOWS_BACKUP_DIR_OVERRIDE", str(WINDOWS_BACKUP_DIR))) / archive_name
+    local_archive = Path(windows_backup_dir) / archive_name
     if not local_archive.is_file():
         fail(f"Windows server-backup copy is missing: {local_archive}")
     actual_hash = sha256_path(local_archive)
@@ -626,6 +626,11 @@ def main() -> None:
     config = a["config_values"]()
     host, win_state, ubu_state = source_states(a, config)
     win_session, target, ubuntu_dir, windows_dir, ubu_session, port, windows_backup_dir, ubuntu_backup_dir = config
+    expected_windows_backup = "/mnt/d/Hagonoy-SMP/server-backup"
+    if windows_backup_dir != expected_windows_backup:
+        fail(f"Windows backup destination must be {expected_windows_backup}; update config/dual-host.conf first.")
+    if not Path(windows_backup_dir).is_dir():
+        fail(f"Windows server-backup directory is missing: {windows_backup_dir}")
     server_dir = ubuntu_dir if host == "UBUNTU" else windows_dir
     facts = a["remote_facts"](target if host == "UBUNTU" else None, server_dir)
     plan = build_update_plan(a, host, facts)
@@ -673,7 +678,7 @@ def main() -> None:
             print("[hagonoy-update] Cancelled. No backup or server file was changed.")
             return
 
-        archive_name, archive_hash = run_backup_and_get_archive()
+        archive_name, archive_hash = run_backup_and_get_archive(windows_backup_dir)
         backup_complete = True
         if current_state(a, config, host) != "STOPPED":
             fail("Source server was not confirmed stopped after the backup transaction.")
