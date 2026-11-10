@@ -108,15 +108,16 @@ def pack_key(filename: str) -> str:
 
 
 def pack_metadata(archive: zipfile.ZipFile) -> tuple[bool, str]:
-    entries = [
-        name for name in archive.namelist()
-        if name == "pack.mcmeta" or name.endswith("/pack.mcmeta")
-    ]
-    if not entries:
-        return False, "pack.mcmeta missing"
-    root_first = sorted(entries, key=lambda name: ("/" in name, len(name)))[0]
+    names = archive.namelist()
+    if "pack.mcmeta" not in names:
+        if any(name.endswith("/pack.mcmeta") for name in names):
+            return False, "pack.mcmeta is nested below the ZIP root"
+        return False, "top-level pack.mcmeta missing"
     try:
-        data = json.loads(archive.read(root_first).decode("utf-8"))
+        bad_member = archive.testzip()
+        if bad_member is not None:
+            return False, f"corrupt ZIP member: {bad_member}"
+        data = json.loads(archive.read("pack.mcmeta").decode("utf-8"))
         pack = data.get("pack")
         if not isinstance(pack, dict):
             return False, "pack metadata object missing"
