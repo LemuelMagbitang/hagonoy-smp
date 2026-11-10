@@ -47,7 +47,7 @@ def config_values() -> tuple[str, str, str, str, str, str, str, str]:
         '"$UBUNTU_SERVER_DIR" "$WINDOWS_SERVER_DIR" "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT" '
         '"$WINDOWS_BACKUP_DIR" "$UBUNTU_BACKUP_DIR"'
     )
-    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\\0").split("\\0")
+    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\0").split("\0")
     if len(values) != 8 or any(not value for value in values):
         fail("Dual-host configuration is missing server, backup or connection details.")
     return tuple(values)
