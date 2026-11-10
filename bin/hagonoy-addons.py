@@ -19,13 +19,6 @@ TARGET_DATA_PACK_FORMAT = (121, 0)
 PRIMARY_BUNDLE = "VanillaTweaks_d831085_UNZIP_ME.zip"
 SECONDARY_BUNDLE = "VanillaTweaks-26.3.zip"
 PAPER_RE = re.compile(r"^paper-(\d+\.\d+)-(\d+)\.jar$", re.IGNORECASE)
-PLUGIN_KEYS = {
-    "chunky": "Chunky",
-    "geyser": "Geyser",
-    "floodgate": "Floodgate",
-}
-
-
 def fail(message: str) -> "NoReturn":
     print(f"[hagonoy] ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -364,11 +357,12 @@ def main() -> None:
         "Geyser-Spigot.jar",
         "floodgate-spigot.jar",
         PRIMARY_BUNDLE,
-        SECONDARY_BUNDLE,
     ]
     print("Expected update files:")
     for name in required:
         print(f"  [{'FOUND' if name.casefold() in by_name else 'MISSING'}] {name}")
+    optional_status = "FOUND" if SECONDARY_BUNDLE.casefold() in by_name else "not present (optional)"
+    print(f"Optional comparison-only archive: [{optional_status}] {SECONDARY_BUNDLE}")
     print()
 
     primary_path = by_name.get(PRIMARY_BUNDLE.casefold())
