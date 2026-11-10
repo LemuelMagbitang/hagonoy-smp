@@ -126,5 +126,7 @@ with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
         assert compatible is False and "nested below" in reason
 
 print("[OK] World-border targets and no-shrink policy constants")
+print("[OK] PaperMC stable-build size and SHA-256 verification")
+print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
 print("[OK] Nested datapack ZIP and 26.3 pack-format inspection")
