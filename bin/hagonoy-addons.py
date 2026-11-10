@@ -331,6 +331,94 @@ def official_paper_candidate(path: Path, minecraft_version: str, build: int) -> 
     return True, f"official stable build {latest_build}; size and SHA-256 verified"
 
 
+def fetch_json(url: str) -> Any:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+def official_chunky_candidate(path: Path, candidate_version: str, candidate_hash: str) -> tuple[bool, str]:
+    url = (
+        "https://api.modrinth.com/v2/project/chunky/version"
+        "?game_versions=%5B%2226.3%22%5D&loaders=%5B%22paper%22%5D"
+    )
+    try:
+        versions = fetch_json(url)
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return False, f"Modrinth compatibility metadata unavailable: {exc}"
+    if not isinstance(versions, list) or not versions:
+        return False, "Modrinth returned no Paper releases for Minecraft 26.3"
+    releases = [
+        item for item in versions
+        if isinstance(item, dict) and item.get("version_type") == "release"
+    ]
+    if not releases:
+        return False, "No stable Chunky release for Paper/Minecraft 26.3 was found"
+    releases.sort(key=lambda item: str(item.get("date_published", "")), reverse=True)
+    latest = releases[0]
+    files = latest.get("files", [])
+    artifact = next(
+        (item for item in files if item.get("filename") == path.name),
+        None,
+    )
+    if artifact is None:
+        return False, f"latest compatible Chunky release is {latest.get('version_number', 'unknown')}; it does not publish {path.name}"
+    expected_hash = artifact.get("hashes", {}).get("sha256")
+    if not isinstance(expected_hash, str):
+        return False, "Modrinth did not publish a SHA-256 for the Paper artifact"
+    if candidate_version != str(latest.get("version_number", "")):
+        return False, f"candidate version {candidate_version}; latest compatible release is {latest.get('version_number')}"
+    if candidate_hash.casefold() != expected_hash.casefold():
+        return False, "Chunky JAR SHA-256 does not match the latest compatible Modrinth artifact"
+    return True, f"official Modrinth release {candidate_version}; Paper + Minecraft 26.3 compatibility and SHA-256 verified"
+
+
+def official_geysermc_candidate(project: str, path: Path, candidate_hash: str) -> tuple[bool, str]:
+    url = f"https://download.geysermc.org/v2/projects/{project}/versions/latest/builds"
+    try:
+        payload = fetch_json(url)
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return False, f"GeyserMC build metadata unavailable: {exc}"
+    if not isinstance(payload, dict) or not isinstance(payload.get("builds"), list):
+        return False, "GeyserMC returned an unexpected builds response"
+    builds = [
+        item for item in payload["builds"]
+        if isinstance(item, dict) and item.get("channel") == "default"
+        and isinstance(item.get("build"), int)
+    ]
+    promoted = [item for item in builds if item.get("promoted") is True]
+    candidates = promoted or builds
+    if not candidates:
+        return False, "GeyserMC has no default Spigot/Paper build metadata"
+    latest = max(candidates, key=lambda item: item["build"])
+    artifact = latest.get("downloads", {}).get("spigot", {})
+    if artifact.get("name") != path.name:
+        return False, f"latest {project} build {latest['build']} does not publish {path.name}"
+    expected_hash = artifact.get("sha256")
+    if not isinstance(expected_hash, str):
+        return False, "GeyserMC did not publish a SHA-256 for the Spigot/Paper artifact"
+    detail = f"GeyserMC {payload.get('version', 'latest')} build {latest['build']}"
+    if candidate_hash.casefold() != expected_hash.casefold():
+        return False, f"{detail}; downloaded JAR SHA-256 does not match publisher artifact"
+    return True, f"{detail}; official Spigot/Paper SHA-256 verified"
+
+
+def official_plugin_candidate(label: str, path: Path, candidate_version: str, candidate_hash: str) -> tuple[bool, str]:
+    if label == "Chunky":
+        return official_chunky_candidate(path, candidate_version, candidate_hash)
+    if label == "Geyser":
+        return official_geysermc_candidate("geyser", path, candidate_hash)
+    if label == "Floodgate":
+        return official_geysermc_candidate("floodgate", path, candidate_hash)
+    return False, "no publisher metadata adapter for this plugin"
+
+
 def print_download_inventory(files: list[Path]) -> None:
     print(f"Download directory: {DOWNLOADS}")
     print("Files available:")
@@ -504,7 +592,11 @@ def main() -> None:
             print(f"    Installed JAR: {current.get('file')} ({current.get('bytes', 0):,} bytes)")
             print(f"    Download SHA-256: {candidate_hash}")
         api = candidate.get("api-version")
-        print(f"    Plugin API declaration: {api or 'not declared'} (minimum API declaration only; not full 26.3 compatibility proof)")
+        print(f"    Plugin API declaration: {api or 'not declared'}")
+        verified, detail = official_plugin_candidate(
+            label, path, str(candidate.get("version", "unknown")), candidate_hash
+        )
+        print(f"    Publisher compatibility: {'VERIFIED' if verified else 'NOT VERIFIED'} — {detail}")
 
     print()
     print("Datapack reconciliation:")
