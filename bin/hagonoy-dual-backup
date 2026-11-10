@@ -322,12 +322,25 @@ stop_source
 
 echo
 log "Creating complete HSMP server TAR archive..."
+if command -v pv >/dev/null 2>&1; then
+    log "Byte progress is enabled (pv); estimated source bytes: $SOURCE_BYTES."
+else
+    log "pv is unavailable; archive creation will report phase status without a byte percentage."
+fi
 
 if [[ "$SOURCE_HOST" == UBUNTU ]]; then
     printf -v qsource '%q' "$UBUNTU_SERVER_DIR"
-    remote "tar -cf - -C $qsource ." > "$WINDOWS_PART"
+    if command -v pv >/dev/null 2>&1; then
+        remote "tar -cf - -C $qsource ." | pv -s "$SOURCE_BYTES" > "$WINDOWS_PART"
+    else
+        remote "tar -cf - -C $qsource ." > "$WINDOWS_PART"
+    fi
 else
-    tar -cf "$WINDOWS_PART" -C "$WINDOWS_SERVER_DIR" .
+    if command -v pv >/dev/null 2>&1; then
+        tar -cf - -C "$WINDOWS_SERVER_DIR" . | pv -s "$SOURCE_BYTES" > "$WINDOWS_PART"
+    else
+        tar -cf "$WINDOWS_PART" -C "$WINDOWS_SERVER_DIR" .
+    fi
 fi
 
 [[ -s "$WINDOWS_PART" ]] || die "Archive is empty."
@@ -345,7 +358,7 @@ WINDOWS_PART=""
 log "Windows archive verified."
 log "Transferring the same archive to Ubuntu..."
 
-rsync -t --partial \
+rsync -t --partial --info=progress2 \
     -e 'ssh -o BatchMode=yes -o ConnectTimeout=8' \
     "$WINDOWS_ARCHIVE" \
     "$UBUNTU_SSH_TARGET:$UBUNTU_PART" ||
