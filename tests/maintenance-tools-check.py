@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import tarfile
 import zipfile
 from pathlib import Path
 
