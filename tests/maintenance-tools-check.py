@@ -34,14 +34,14 @@ with tempfile.TemporaryDirectory(prefix="hsmp-config-parse-test-") as tmp:
     root = Path(tmp)
     (root / "config").mkdir()
     (root / "config" / "dual-host.conf").write_text(
-        'WINDOWS_TMUX_SESSION="mc-win"\\n'
-        'UBUNTU_SSH_TARGET="hsmp@ubuntu"\\n'
-        'UBUNTU_SERVER_DIR="/home/hsmp/minecraft-server"\\n'
-        'WINDOWS_SERVER_DIR="/mnt/d/Hagonoy-SMP/minecraft-server"\\n'
-        'UBUNTU_TMUX_SESSION="mc-ubuntu"\\n'
-        'MINECRAFT_PORT="25565"\\n'
-        'WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/server-backup"\\n'
-        'UBUNTU_BACKUP_DIR="/home/hsmp/server-backup"\\n',
+        'WINDOWS_TMUX_SESSION="mc-win"\n'
+        'UBUNTU_SSH_TARGET="hsmp@ubuntu"\n'
+        'UBUNTU_SERVER_DIR="/home/hsmp/minecraft-server"\n'
+        'WINDOWS_SERVER_DIR="/mnt/d/Hagonoy-SMP/minecraft-server"\n'
+        'UBUNTU_TMUX_SESSION="mc-ubuntu"\n'
+        'MINECRAFT_PORT="25565"\n'
+        'WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/server-backup"\n'
+        'UBUNTU_BACKUP_DIR="/home/hsmp/server-backup"\n',
         encoding="utf-8",
     )
     original_root = addons["ROOT"]
