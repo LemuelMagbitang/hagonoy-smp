@@ -828,6 +828,12 @@ def main() -> None:
         print("========== APPLY STAGED SERVER UPDATES ==========")
         changes_attempted = True
         apply_local(host, server_dir, stage, target, config)
+        secondary_state = other_state(a, config, host)
+        if secondary_state != "STOPPED":
+            raise RuntimeError(
+                "Secondary host changed state during file replacement "
+                f"({secondary_state}); refusing to start the updated source."
+            )
 
         print()
         print("========== START UPDATED SERVER ==========")
@@ -848,6 +854,11 @@ def main() -> None:
                 "to prevent two canonical servers running simultaneously."
             )
         update_verify(a, plan, target, server_dir)
+        if other_state(a, config, host) != "STOPPED":
+            raise RuntimeError(
+                "Secondary host became active during post-start verification; "
+                "the updated source will be stopped and rolled back."
+            )
 
         print()
         print("========== HSMP UPDATE SUCCESS ==========")
