@@ -324,7 +324,7 @@ def official_paper_candidate(path: Path, minecraft_version: str, build: int) -> 
     ]
     if not stable:
         return False, f"PaperMC has no stable build for Minecraft {minecraft_version}"
-    latest = stable[0]
+    latest = max(stable, key=lambda item: item["id"])
     latest_build = latest["id"]
     if build != latest_build:
         return False, f"downloaded build {build}; latest stable is {latest_build}"
