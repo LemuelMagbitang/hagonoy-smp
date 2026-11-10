@@ -173,6 +173,62 @@ def validate_staged_file(path: Path, expected_sha: str) -> None:
         fail(f"Staged update SHA-256 mismatch: {path.name}")
 
 
+def assert_runtime_stopped(host: str, session: str, port: str) -> None:
+    session_result = subprocess.run(
+        ["tmux", "has-session", "-t", f"={session}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    if session_result.returncode == 0:
+        raise RuntimeError("Managed Minecraft tmux session still exists; refusing file maintenance.")
+    if session_result.returncode != 1:
+        raise RuntimeError("Could not reliably establish tmux state; refusing file maintenance.")
+
+    if host == "ubuntu":
+        probe = subprocess.run(
+            ["ss", "-H", "-ltn", f"sport = :{int(port)}"],
+            text=True, capture_output=True, check=False,
+        )
+        if probe.returncode != 0 or probe.stdout.strip():
+            raise RuntimeError("Ubuntu Minecraft TCP listener remains active or uncertain.")
+    elif host == "windows":
+        command = (
+            f"$c=Get-NetTCPConnection -State Listen -LocalPort {int(port)} "
+            "-ErrorAction SilentlyContinue; if ($c) {'RUNNING'} else {'STOPPED'}"
+        )
+        probe = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            text=True, capture_output=True, timeout=12, check=False,
+        )
+        if probe.returncode != 0 or probe.stdout.strip().replace("\\r", "") != "STOPPED":
+            raise RuntimeError("Windows Minecraft TCP listener remains active or uncertain.")
+    else:
+        raise RuntimeError(f"Unsupported maintenance host: {host}")
+
+
+def with_maintenance_lock(host: str, operation, *args):
+    lock_path = (
+        "/tmp/hagonoy-smp-lifecycle.lock"
+        if host == "ubuntu"
+        else "/tmp/hagonoy-smp-windows-lifecycle.lock"
+    )
+    try:
+        with open(lock_path, "a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return operation(*args)
+    except BlockingIOError as exc:
+        raise RuntimeError("Another HSMP lifecycle or maintenance operation holds the host lock.") from exc
+
+
+def locked_apply_staged_changes(
+    server_dir: Path, stage_dir: Path, host: str, session: str, port: str
+) -> None:
+    def operation() -> None:
+        assert_runtime_stopped(host, session, port)
+        apply_staged_changes(server_dir, stage_dir)
+
+    with_maintenance_lock(host, operation)
+
+
 def apply_staged_changes(server_dir: Path, stage_dir: Path) -> None:
     server_dir = server_dir.resolve(strict=True)
     stage_dir = stage_dir.resolve(strict=True)
@@ -274,6 +330,16 @@ def safe_archive_members(archive_path: Path) -> None:
                         raise RuntimeError(f"Unsafe link in backup archive: {member.name} -> {member.linkname}")
     except (OSError, tarfile.TarError) as exc:
         raise RuntimeError(f"Cannot validate backup archive: {exc}") from exc
+
+
+def locked_restore_archive_local(
+    archive_path: Path, server_dir: Path, host: str, session: str, port: str
+) -> None:
+    def operation() -> None:
+        assert_runtime_stopped(host, session, port)
+        restore_archive_local(archive_path, server_dir)
+
+    with_maintenance_lock(host, operation)
 
 
 def restore_archive_local(archive_path: Path, server_dir: Path) -> None:
@@ -520,9 +586,14 @@ def make_stage(plan: dict[str, Any]) -> Path:
         raise
 
 
-def apply_local(host: str, server_dir: str, stage: Path, target: str) -> None:
+def apply_local(
+    host: str, server_dir: str, stage: Path, target: str,
+    config: tuple[str, ...],
+) -> None:
+    win_session, _target, _ubuntu_dir, _windows_dir, ubu_session, port, _win_backup, _ubu_backup = config
+    session = ubu_session if host == "UBUNTU" else win_session
     if host == "WINDOWS":
-        apply_staged_changes(Path(server_dir), stage)
+        locked_apply_staged_changes(Path(server_dir), stage, "windows", session, port)
         return
 
     parent = str(Path(server_dir).parent)
@@ -544,6 +615,7 @@ def apply_local(host: str, server_dir: str, stage: Path, target: str) -> None:
         command = [
             "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             target, "python3", "-", "--remote-apply", server_dir, remote_stage,
+            "ubuntu", session, port,
         ]
         run(command, input_text=script, timeout=180)
     finally:
@@ -562,18 +634,23 @@ def lifecycle(host: str, action: str) -> None:
 def restore_archive(
     host: str, server_dir: str, target: str, archive_name: str,
     windows_backup_dir: str, ubuntu_backup_dir: str,
+    config: tuple[str, ...],
 ) -> None:
+    win_session, _target, _ubuntu_dir, _windows_dir, ubu_session, port, _win_backup, _ubu_backup = config
+    session = ubu_session if host == "UBUNTU" else win_session
+    host_key = host.lower()
     if host == "WINDOWS":
         archive = Path(windows_backup_dir) / archive_name
         if not archive.is_file():
             raise RuntimeError(f"Verified Windows rollback archive is missing: {archive}")
-        restore_archive_local(archive, Path(server_dir))
+        locked_restore_archive_local(archive, Path(server_dir), host_key, session, port)
         return
 
     remote_archive = str(Path(ubuntu_backup_dir) / archive_name)
     command = [
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
         target, "python3", "-", "--remote-restore", server_dir, remote_archive,
+        host_key, session, port,
     ]
     run(command, input_text=Path(__file__).read_text(encoding="utf-8"), timeout=2400)
 
@@ -647,13 +724,13 @@ def update_verify(a: dict[str, Any], plan: dict[str, Any], target: str, server_d
 
 
 def main() -> None:
-    if len(sys.argv) == 4 and sys.argv[1] == "--remote-apply":
-        apply_staged_changes(Path(sys.argv[2]), Path(sys.argv[3]))
+    if len(sys.argv) == 7 and sys.argv[1] == "--remote-apply":
+        locked_apply_staged_changes(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6])
         return
-    if len(sys.argv) == 4 and sys.argv[1] == "--remote-restore":
+    if len(sys.argv) == 7 and sys.argv[1] == "--remote-restore":
         server_dir = Path(sys.argv[2]).resolve(strict=True)
         archive_path = Path(sys.argv[3]).resolve(strict=True)
-        restore_archive_local(archive_path, server_dir)
+        locked_restore_archive_local(archive_path, server_dir, sys.argv[4], sys.argv[5], sys.argv[6])
         return
     if len(sys.argv) != 2 or sys.argv[1] != "--execute":
         fail("Usage: ./hagonoy update --execute")
@@ -726,7 +803,7 @@ def main() -> None:
         print()
         print("========== APPLY STAGED SERVER UPDATES ==========")
         changes_attempted = True
-        apply_local(host, server_dir, stage, target)
+        apply_local(host, server_dir, stage, target, config)
 
         print()
         print("========== START UPDATED SERVER ==========")
@@ -765,7 +842,7 @@ def main() -> None:
                     print(f"[hagonoy-update] Verified rollback archive retained: {archive_name}", file=sys.stderr)
                     raise SystemExit(1)
                 print("[hagonoy-update] Restoring the complete pre-update server from server-backup...")
-                restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir)
+                restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir, config)
                 lifecycle(host, "start")
                 if current_state(a, config, host) != "RUNNING":
                     raise RuntimeError("Original server files restored but previous server did not confirm readiness.")
