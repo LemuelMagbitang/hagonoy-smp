@@ -187,7 +187,21 @@ The equivalent component-specific command is `./hagonoy addons --plan`.
 
 It lists every file in `D:\Hagonoy-SMP\server-update-downloads`, compares downloaded Paper/plugin metadata and SHA-256 hashes with the installed server, and inspects the nested datapack ZIPs in `VanillaTweaks_d831085_UNZIP_ME.zip`. A Paper candidate must match the newest stable build reported by the official PaperMC Fill API, including its published size and SHA-256, before it is marked verified. Plugin JARs are checked for ZIP integrity, descriptor versions and binary hashes. Chunky is compared with Modrinth's Paper/26.3 release metadata; Geyser and Floodgate artifacts are compared with GeyserMC's published Spigot/Paper build hashes. API-version declarations alone are not treated as proof of compatibility. That `UNZIP_ME` bundle is the authoritative selected set; `VanillaTweaks-26.3.zip` is displayed for comparison only and is not merged into the selected set. This prevents packs omitted from the selected bundle from being re-added from the secondary ZIP. The inventory checks each nested `pack.mcmeta` against Minecraft 26.3 data-pack format 121.0.
 
-The addon command currently reports the plan only. It does not change Paper, plugins, datapacks, or server files. Deployment is not enabled until the staged update and rollback path has been tested.
+To apply the reviewed update selection, run:
+
+```bash
+./hagonoy update --execute
+```
+
+The deployment command rebuilds the plan from the current download folder and active canonical host. It refuses an ambiguous/dual-running host, a cross-Minecraft-version Paper candidate, an unverified Paper/plugin artifact, or a datapack whose metadata does not declare 26.3 format 121.0. The secondary VanillaTweaks ZIP is never merged into the selected set.
+
+It asks for one explicit confirmation: `APPLY HSMP SERVER UPDATES`. It then creates a complete pre-update TAR with matching SHA-256 copies in both canonical `server-backup` folders and leaves the authoritative server stopped while it stages changes. Paper is installed as the configured `server.jar`; verified plugin JARs replace the corresponding older JARs; all 13 datapacks from the selected `UNZIP_ME` bundle are reconciled into `world/datapacks`. Older active/disabled VanillaTweaks ZIPs absent from that bundle are retired without separate prompts. Unrelated datapacks and plugin configuration folders are preserved.
+
+After deployment, Hagonoy starts the same authoritative host and verifies the Paper build, plugin JAR hashes, selected datapack hashes and critical plugin-load errors in the new startup log. If verification fails and the server can be safely stopped, the updater restores the complete pre-update TAR using a staged full-directory restore, then starts the previous server generation. If host state is uncertain, it does not replace files while Java may still be active; the verified backup is retained for recovery.
+
+The command does not automatically copy the updated world to the secondary canonical host. Use the existing generation-verified `./hagonoy pull --plan` / `--execute` workflow separately when you are ready to synchronize the stopped Windows secondary. The updater does not change any world border.
+
+The machine-specific ignored `config/dual-host.conf` must point Windows backups at `/mnt/d/Hagonoy-SMP/server-backup`; the updater refuses to run its pre-update backup while that setting still points at the legacy vault.
 ## 10. Playit.gg (optional)
 
 On Ubuntu, installing Playit through its APT package can create a systemd service named `playit.service` that runs the agent in the background. Check it with:
