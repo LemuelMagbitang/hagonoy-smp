@@ -9,3 +9,9 @@ bash -n "$ROOT/bin/hagonoy"
 printf '[OK] bin/hagonoy\n'
 bash -n "$ROOT/hagonoy"
 printf '[OK] hagonoy\n'
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-world-border.py"
+printf '[OK] bin/hagonoy-world-border.py (Python syntax)\n'
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-addons.py"
+printf '[OK] bin/hagonoy-addons.py (Python syntax)\n'
+python3 "$ROOT/tests/maintenance-tools-check.py"
+
