@@ -385,7 +385,18 @@ def official_chunky_candidate(path: Path, candidate_version: str, candidate_hash
         None,
     )
     if artifact is None:
-        return False, f"latest compatible Chunky release is {latest.get('version_number', 'unknown')}; it does not publish {path.name}"
+        artifact = next(
+            (
+                item for item in files
+                if item.get("hashes", {}).get("sha256", "").casefold() == candidate_hash.casefold()
+            ),
+            None,
+        )
+    if artifact is None:
+        return False, (
+            f"latest compatible Chunky release is {latest.get('version_number', 'unknown')}; "
+            f"neither its filename nor SHA-256 matches {path.name}"
+        )
     expected_hash = artifact.get("hashes", {}).get("sha256")
     if not isinstance(expected_hash, str):
         return False, "Modrinth did not publish a SHA-256 for the Paper artifact"
