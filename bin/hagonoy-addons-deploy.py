@@ -98,14 +98,9 @@ def run_stream(args: list[str], *, timeout: int = 3600) -> str:
                     output.append(decoded)
                     print(decoded, end="", flush=True)
             elif process.poll() is not None:
-                # Drain the final bytes before exiting.
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    break
-                decoded = decoder.decode(chunk)
-                if decoded:
-                    output.append(decoded)
-                    print(decoded, end="", flush=True)
+                # Do not perform a blocking read after the direct child has exited;
+                # a detached descendant could still hold the pipe open.
+                break
         tail = decoder.decode(b"", final=True)
         if tail:
             output.append(tail)
