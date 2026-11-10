@@ -2,10 +2,13 @@
 """Read-only inventory of HSMP server-update-downloads and current installations."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -171,14 +174,14 @@ def read_bundle(path: Path) -> dict[str, dict[str, Any]]:
     return packs
 
 
-def remote_facts(target: str, server_dir: str) -> dict[str, Any]:
+def remote_facts(target: str | None, server_dir: str) -> dict[str, Any]:
     remote_code = r'''
-import glob, json, os, re, sys, zipfile
+import glob, hashlib, json, os, re, sys, zipfile
 from pathlib import Path
 
 server = Path(sys.argv[1])
 def plugin_info(path):
-    result = {"file": path.name, "bytes": path.stat().st_size}
+    result = {"file": path.name, "bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     try:
         with zipfile.ZipFile(path) as jar:
             names = set(jar.namelist())
@@ -199,6 +202,14 @@ if log.is_file():
         if "This server is running Paper version " in line:
             paper_line = line
 plugins = [plugin_info(Path(p)) for p in sorted(glob.glob(str(server / "plugins" / "*.jar")))]
+paper_jar = server / "server.jar"
+paper_jar_info = None
+if paper_jar.is_file():
+    paper_jar_info = {
+        "file": paper_jar.name,
+        "bytes": paper_jar.stat().st_size,
+        "sha256": hashlib.sha256(paper_jar.read_bytes()).hexdigest(),
+    }
 datapacks = sorted(p.name for p in (server / "world" / "datapacks").glob("*.zip"))
 legacy = []
 for d in server.glob("datapacks-disabled*"):
@@ -206,6 +217,7 @@ for d in server.glob("datapacks-disabled*"):
         legacy.extend(sorted(p.name for p in d.glob("*.zip")))
 print(json.dumps({
     "paper_line": paper_line,
+    "paper_jar": paper_jar_info,
     "plugins": plugins,
     "datapacks": datapacks,
     "legacy_disabled_datapacks": sorted(set(legacy)),
@@ -272,6 +284,58 @@ def paper_current_version(line: str) -> tuple[str, int] | None:
     if not match:
         return None
     return match.group(1), int(match.group(2))
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def official_paper_candidate(path: Path, minecraft_version: str, build: int) -> tuple[bool, str]:
+    api_url = f"https://fill.papermc.io/v3/projects/paper/versions/{minecraft_version}/builds"
+    request = urllib.request.Request(
+        api_url,
+        headers={"User-Agent": "HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return False, f"PaperMC API verification unavailable: {exc}"
+    if not isinstance(payload, list):
+        return False, "PaperMC returned an unexpected builds response"
+    stable = [
+        item for item in payload
+        if isinstance(item, dict) and item.get("channel") == "STABLE"
+        and isinstance(item.get("id"), int)
+    ]
+    if not stable:
+        return False, f"PaperMC has no stable build for Minecraft {minecraft_version}"
+    latest = stable[0]
+    latest_build = latest["id"]
+    if build != latest_build:
+        return False, f"downloaded build {build}; latest stable is {latest_build}"
+    download = latest.get("downloads", {}).get("server:default", {})
+    expected_size = download.get("size")
+    expected_hash = download.get("checksums", {}).get("sha256")
+    if not isinstance(expected_size, int) or not isinstance(expected_hash, str):
+        return False, "PaperMC response lacks expected size or SHA-256 metadata"
+    if path.stat().st_size != expected_size:
+        return False, f"file size mismatch (expected {expected_size:,}, found {path.stat().st_size:,})"
+    actual_hash = sha256_file(path)
+    if actual_hash.casefold() != expected_hash.casefold():
+        return False, f"SHA-256 mismatch (expected {expected_hash}, found {actual_hash})"
+    try:
+        with zipfile.ZipFile(path) as jar:
+            bad = jar.testzip()
+            if bad is not None or "META-INF/MANIFEST.MF" not in jar.namelist():
+                return False, f"invalid Paper JAR archive ({bad or 'manifest missing'})"
+    except (OSError, zipfile.BadZipFile) as exc:
+        return False, f"invalid Paper JAR: {exc}"
+    return True, f"official stable build {latest_build}; size and SHA-256 verified"
 
 
 def print_download_inventory(files: list[Path]) -> None:
@@ -379,10 +443,26 @@ def main() -> None:
         elif candidate_build > current_paper[1]:
             status = "newer build candidate"
         elif candidate_build == current_paper[1]:
-            status = "already installed"
+            status = "same build"
         else:
             status = "older build; do not downgrade"
         print(f"  Paper download:   Minecraft {candidate_version}, build {candidate_build} — {status}")
+        if current_paper and candidate_version == current_paper[0]:
+            verified, detail = official_paper_candidate(paper_candidate_path, candidate_version, candidate_build)
+            print(f"  Paper authenticity: {'VERIFIED' if verified else 'BLOCKED'} — {detail}")
+        else:
+            print("  Paper authenticity: BLOCKED — Minecraft version cannot be safely matched.")
+        current_jar = facts.get("paper_jar")
+        candidate_hash = sha256_file(paper_candidate_path)
+        if current_jar:
+            print(f"  Installed JAR:    {current_jar['file']} ({current_jar['bytes']:,} bytes, SHA-256 {current_jar['sha256']})")
+            print(f"  Download SHA-256: {candidate_hash}")
+            if candidate_hash == current_jar["sha256"]:
+                print("  Paper file state: exact same binary; no replacement needed")
+            elif current_paper and candidate_version == current_paper[0] and candidate_build == current_paper[1]:
+                print("  Paper file state: same reported build, different binary; do not replace automatically")
+        else:
+            print("  Installed JAR:    server.jar was not found for hash comparison")
     else:
         print("  Paper download:   no recognizable paper-<mc>-<build>.jar candidate found")
 
