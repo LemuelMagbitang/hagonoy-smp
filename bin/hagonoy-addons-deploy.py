@@ -806,6 +806,12 @@ def main() -> None:
         backup_complete = True
         if current_state(a, config, host) != "STOPPED":
             fail("Source server was not confirmed stopped after the backup transaction.")
+        secondary_state = other_state(a, config, host)
+        if secondary_state != "STOPPED":
+            fail(
+                "Secondary host is not confirmed stopped after backup "
+                f"({secondary_state}); refusing to modify the authoritative copy."
+            )
 
         print()
         print("========== APPLY STAGED SERVER UPDATES ==========")
@@ -814,9 +820,22 @@ def main() -> None:
 
         print()
         print("========== START UPDATED SERVER ==========")
+        secondary_state = other_state(a, config, host)
+        if secondary_state != "STOPPED":
+            raise RuntimeError(
+                "Secondary host is not confirmed stopped before startup "
+                f"({secondary_state}); refusing a dual-server start."
+            )
         lifecycle(host, "start")
         if current_state(a, config, host) != "RUNNING":
             raise RuntimeError("Updated server did not reach a confirmed RUNNING state.")
+        secondary_state = other_state(a, config, host)
+        if secondary_state != "STOPPED":
+            lifecycle(host, "stop")
+            raise RuntimeError(
+                "Secondary host became active during startup; the updated source was stopped "
+                "to prevent two canonical servers running simultaneously."
+            )
         update_verify(a, plan, target, server_dir)
 
         print()
@@ -862,9 +881,18 @@ def main() -> None:
                     raise SystemExit(1)
                 print("[hagonoy-update] Restoring the complete pre-update server from server-backup...")
                 restore_archive(host, server_dir, target, archive_name, windows_backup_dir, ubuntu_backup_dir, config, archive_hash)
+                secondary_state = other_state(a, config, host)
+                if secondary_state != "STOPPED":
+                    raise RuntimeError(
+                        "Original server files were restored, but the secondary host is "
+                        f"{secondary_state}; leaving the restored source stopped."
+                    )
                 lifecycle(host, "start")
                 if current_state(a, config, host) != "RUNNING":
                     raise RuntimeError("Original server files restored but previous server did not confirm readiness.")
+                if other_state(a, config, host) != "STOPPED":
+                    lifecycle(host, "stop")
+                    raise RuntimeError("Secondary host became active during rollback startup; restored source stopped to prevent split brain.")
                 print("[hagonoy-update] ROLLBACK=SUCCESS. Original server generation restored and running.")
             except Exception as rollback_error:
                 print(f"[hagonoy-update] ROLLBACK FAILED: {rollback_error}", file=sys.stderr)
