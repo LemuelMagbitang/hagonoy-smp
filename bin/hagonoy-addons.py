@@ -477,7 +477,17 @@ def main() -> None:
         if path is None:
             print(f"  {label}: download missing")
             continue
-        candidate = read_plugin_descriptor(path.read_bytes())
+        candidate_blob = path.read_bytes()
+        candidate_hash = hashlib.sha256(candidate_blob).hexdigest()
+        try:
+            with zipfile.ZipFile(path) as jar:
+                corrupt = jar.testzip()
+                if corrupt is not None:
+                    raise ValueError(f"corrupt JAR member: {corrupt}")
+        except (OSError, zipfile.BadZipFile, ValueError) as exc:
+            print(f"  {label}: downloaded JAR integrity check failed: {exc}")
+            continue
+        candidate = read_plugin_descriptor(candidate_blob)
         current = next(
             (item for item in installed
              if str(item.get("name", "")).casefold().replace("-spigot", "") == label.casefold()),
@@ -491,9 +501,16 @@ def main() -> None:
         else:
             old_version = str(current.get("version", "unknown"))
             new_version = str(candidate.get("version", "unknown"))
-            print(f"  {label}: installed {old_version}; downloaded {new_version} — {compare_versions(new_version, old_version)}")
+            verdict = compare_versions(new_version, old_version)
+            if candidate_hash == current.get("sha256"):
+                verdict = "identical SHA-256; no update needed"
+            elif verdict == "same version":
+                verdict = "same version but different binary; hold for manual review"
+            print(f"  {label}: installed {old_version}; downloaded {new_version} — {verdict}")
+            print(f"    Installed JAR: {current.get('file')} ({current.get('bytes', 0):,} bytes)")
+            print(f"    Download SHA-256: {candidate_hash}")
         api = candidate.get("api-version")
-        print(f"    Plugin API declaration: {api or 'not declared'} (this is not, by itself, proof of compatibility with Minecraft 26.3)")
+        print(f"    Plugin API declaration: {api or 'not declared'} (minimum API declaration only; not full 26.3 compatibility proof)")
 
     print()
     print("Datapack reconciliation:")
