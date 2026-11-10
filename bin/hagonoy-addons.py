@@ -41,18 +41,19 @@ def run(args: list[str], *, input_text: str | None = None, timeout: int = 30) ->
     return result.stdout.strip()
 
 
-def config_values() -> tuple[str, str]:
+def config_values() -> tuple[str, str, str, str, str, str]:
     config = ROOT / "config" / "dual-host.conf"
     if not config.is_file():
         fail(f"Missing dual-host configuration: {config}")
     code = (
         'source "$1" || exit 1; '
-        'printf "%s\\0" "$UBUNTU_SSH_TARGET" "$UBUNTU_SERVER_DIR"'
+        'printf "%s\\0" "$WINDOWS_TMUX_SESSION" "$UBUNTU_SSH_TARGET" '
+        '"$UBUNTU_SERVER_DIR" "$WINDOWS_SERVER_DIR" "$UBUNTU_TMUX_SESSION" "$MINECRAFT_PORT"'
     )
-    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\0").split("\0")
-    if len(values) != 2 or any(not value for value in values):
-        fail("Dual-host configuration is missing Ubuntu connection details.")
-    return values[0], values[1]
+    values = run(["bash", "-c", code, "bash", str(config)]).rstrip("\\0").split("\\0")
+    if len(values) != 6 or any(not value for value in values):
+        fail("Dual-host configuration is missing server or connection details.")
+    return tuple(values)
 
 
 def read_plugin_descriptor(blob: bytes) -> dict[str, str]:
@@ -209,10 +210,60 @@ print(json.dumps({
     "legacy_disabled_datapacks": sorted(set(legacy)),
 }))
 '''
-    return json.loads(run([
-        "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-        target, "python3", "-", server_dir,
-    ], input_text=remote_code, timeout=35))
+    if target:
+        output = run([
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            target, "python3", "-", server_dir,
+        ], input_text=remote_code, timeout=35)
+    else:
+        output = run(["python3", "-", server_dir], input_text=remote_code, timeout=35)
+    return json.loads(output)
+
+
+def windows_state(session: str, port: str) -> str:
+    session_running = subprocess.run(
+        ["tmux", "has-session", "-t", f"={session}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    command = (
+        f"$c=Get-NetTCPConnection -State Listen -LocalPort {int(port)} "
+        "-ErrorAction SilentlyContinue; if ($c) {'LISTENING'} else {'STOPPED'}"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            text=True, capture_output=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "UNKNOWN"
+    port_state = result.stdout.strip().replace("\\r", "") if result.returncode == 0 else "UNKNOWN"
+    if session_running and port_state == "LISTENING":
+        return "RUNNING"
+    if not session_running and port_state == "STOPPED":
+        return "STOPPED"
+    return "UNKNOWN"
+
+
+def ubuntu_state(target: str, session: str, port: str) -> str:
+    code = (
+        f"if tmux has-session -t '={session}' 2>/dev/null && "
+        f"ss -H -ltn 'sport = :{int(port)}' 2>/dev/null | grep -q .; then "
+        "echo RUNNING; "
+        f"elif ! tmux has-session -t '={session}' 2>/dev/null && "
+        f"! ss -H -ltn 'sport = :{int(port)}' 2>/dev/null | grep -q .; then "
+        "echo STOPPED; else echo UNKNOWN; fi"
+    )
+    try:
+        result = subprocess.run(
+            ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, code],
+            text=True, capture_output=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "UNKNOWN"
+    if result.returncode:
+        return "UNKNOWN"
+    value = result.stdout.strip()
+    return value if value in {"RUNNING", "STOPPED"} else "UNKNOWN"
 
 
 def paper_current_version(line: str) -> tuple[str, int] | None:
@@ -290,8 +341,22 @@ def main() -> None:
         print(f"  Present only in secondary ZIP: {', '.join(only_secondary) or 'none'}")
         print("The updater will not union these bundles; this prevents re-adding packs absent from your UNZIP_ME selection.")
 
-    target, server_dir = config_values()
-    facts = remote_facts(target, server_dir)
+    win_session, target, ubuntu_dir, windows_dir, ubu_session, port = config_values()
+    win_state = windows_state(win_session, port)
+    ubu_state = ubuntu_state(target, ubu_session, port)
+    print(f"Windows canonical: {win_state}")
+    print(f"Ubuntu canonical:  {ubu_state}")
+    if win_state == "UNKNOWN" or ubu_state == "UNKNOWN":
+        fail("A canonical host state is uncertain; cannot determine which installed server is authoritative.")
+    if win_state == "RUNNING" and ubu_state == "RUNNING":
+        fail("Both canonical servers appear to be running; resolve this before update planning.")
+    if win_state == "STOPPED" and ubu_state == "STOPPED":
+        fail("Both canonical servers are stopped; no authoritative installed server can be selected.")
+    if ubu_state == "RUNNING":
+        source_host, facts = "UBUNTU", remote_facts(target, ubuntu_dir)
+    else:
+        source_host, facts = "WINDOWS", remote_facts(None, windows_dir)
+    print(f"Installed source: {source_host}")
     current_paper = paper_current_version(facts.get("paper_line", ""))
     paper_candidate_path = next(
         (p for p in files if PAPER_RE.match(p.name)), None
