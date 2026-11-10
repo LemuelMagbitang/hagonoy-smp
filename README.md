@@ -177,11 +177,13 @@ To apply the Overworld and Nether expansion and set all three centers:
 
 The command checks which canonical host is running and reads all three current diameters. It refuses uncertain or dual-running host states and refuses to shrink an Overworld or Nether border that is already wider than its target. It then requires the exact interactive phrase `APPLY HSMP BORDER 12500 3125 KEEP-END`, applies dimension-specific commands, and verifies the resulting diameters. The End diameter is queried before and after and must remain unchanged. Border application does not restart Minecraft.
 
-The addon inventory is read-only:
+The one-command update preview is read-only:
 
 ```bash
-./hagonoy addons --plan
+./hagonoy update --plan
 ```
+
+The equivalent component-specific command is `./hagonoy addons --plan`.
 
 It lists every file in `D:\Hagonoy-SMP\server-update-downloads`, compares downloaded Paper/plugin metadata and SHA-256 hashes with the installed server, and inspects the nested datapack ZIPs in `VanillaTweaks_d831085_UNZIP_ME.zip`. A Paper candidate must match the newest stable build reported by the official PaperMC Fill API, including its published size and SHA-256, before it is marked verified. Plugin JARs are checked for ZIP integrity, descriptor versions, and identical binaries; the declared Bukkit/Paper API version alone is not treated as proof of 26.3 compatibility. That `UNZIP_ME` bundle is the authoritative selected set; `VanillaTweaks-26.3.zip` is displayed for comparison only and is not merged into the selected set. This prevents packs omitted from the selected bundle from being re-added from the secondary ZIP. The inventory checks each nested `pack.mcmeta` against Minecraft 26.3 data-pack format 121.0.
 
