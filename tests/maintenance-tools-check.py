@@ -25,7 +25,8 @@ assert border["TARGETS"]["minecraft:the_nether"]["diameter"] == 3125
 assert border["TARGETS"]["minecraft:the_nether"]["center"] == ("-293.625", "4.75")
 assert border["TARGETS"]["minecraft:the_end"]["diameter"] == 20000
 assert border["TARGETS"]["minecraft:the_end"]["change_diameter"] is False
-assert border["WIDTH_RE"].search("World border is currently 10000 block(s) wide")
+assert border["WIDTH_RE"].search("The world border is currently 10000 blocks wide")
+assert border["WIDTH_RE"].search("The world border is currently 10000 block wide")
 
 addons = load(ROOT / "bin" / "hagonoy-addons.py")
 assert addons["pack_key"]("painting picker v1.1.5 (MC 26.3).zip") == "painting picker"
