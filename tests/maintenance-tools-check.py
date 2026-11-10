@@ -192,6 +192,7 @@ with tempfile.TemporaryDirectory(prefix="hsmp-deploy-test-") as tmp:
         "paper": {"sha256": sha(b"new verified paper")},
         "plugins": [{
             "name": "Chunky",
+            "version": "1.5.66",
             "filename": "Chunky-Paper-1.5.66.jar",
             "sha256": sha(new_chunky),
             "remove_files": ["Chunky-Bukkit-1.5.3.jar"],
