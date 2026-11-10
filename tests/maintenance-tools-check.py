@@ -291,6 +291,20 @@ with tempfile.TemporaryDirectory(prefix="hsmp-lock-test-") as tmp:
         deploy["subprocess"].run = original_run
     assert len(seen) == 2
 
+    lock_path = Path("/tmp/hagonoy-smp-lifecycle.lock")
+    with lock_path.open("a", encoding="utf-8") as holder:
+        deploy["fcntl"].flock(holder.fileno(), deploy["fcntl"].LOCK_EX | deploy["fcntl"].LOCK_NB)
+        try:
+            try:
+                deploy["with_maintenance_lock"]("ubuntu", lambda: "unexpected")
+            except RuntimeError as exc:
+                assert "holds the host lock" in str(exc)
+            else:
+                raise AssertionError("Maintenance ignored an existing lifecycle lock")
+        finally:
+            deploy["fcntl"].flock(holder.fileno(), deploy["fcntl"].LOCK_UN)
+    assert deploy["with_maintenance_lock"]("ubuntu", lambda: "released") == "released"
+
 try:
     deploy["run_stream"]([__import__("sys").executable, "-c", "import time; time.sleep(0.25)"], timeout=2)
 except Exception as exc:
