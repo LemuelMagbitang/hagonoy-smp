@@ -41,6 +41,34 @@ def make_pack(format_version: int) -> bytes:
         archive.writestr("data/example/functions/test.mcfunction", "say test\n")
     return target.getvalue()
 
+with tempfile.TemporaryDirectory(prefix="hsmp-paper-test-") as tmp:
+    artifact = Path(tmp) / "paper-26.3-244.jar"
+    with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED) as jar:
+        jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\\n")
+        jar.writestr("paper-test.txt", "stable build test")
+    digest = addons["sha256_file"](artifact)
+    expected = {
+        "channel": "STABLE",
+        "id": 244,
+        "downloads": {
+            "server:default": {
+                "size": artifact.stat().st_size,
+                "checksums": {"sha256": digest},
+            }
+        },
+    }
+    import urllib.request
+    original = urllib.request.urlopen
+    try:
+        urllib.request.urlopen = lambda request, timeout=20: io.BytesIO(json.dumps([expected]).encode())
+        verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
+        assert verified and "SHA-256 verified" in detail
+        expected["downloads"]["server:default"]["checksums"]["sha256"] = "0" * 64
+        verified, detail = addons["official_paper_candidate"](artifact, "26.3", 244)
+        assert not verified and "SHA-256 mismatch" in detail
+    finally:
+        urllib.request.urlopen = original
+
 with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
     bundle = Path(tmp) / "VanillaTweaks_d831085_UNZIP_ME.zip"
     with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as outer:
@@ -49,6 +77,13 @@ with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
     packs = addons["read_bundle"](bundle)
     assert packs["painting picker"]["compatible"] is True
     assert packs["old pack"]["compatible"] is False
+
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("nested/pack.mcmeta", json.dumps({"pack": {"pack_format": 121}}))
+    with zipfile.ZipFile(io.BytesIO(nested.getvalue())) as archive:
+        compatible, reason = addons["pack_metadata"](archive)
+        assert compatible is False and "nested below" in reason
 
 print("[OK] World-border targets and no-shrink policy constants")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
