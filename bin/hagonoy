@@ -815,11 +815,13 @@ Commands:
   windows-start   Start Windows canonical when Ubuntu is stopped
   windows-stop    Gracefully stop Windows canonical
   dual-preflight  Preview the dual-host backup source and storage requirements
-  dual-backup     Dual-vault backup operation (--plan|--execute)
+  dual-backup     Dual-host backup operation (--plan|--execute)
+  border         Plan or apply approved per-dimension world borders (--plan|--apply)
+  addons         Inventory or apply downloaded Paper/plugins/VanillaTweaks files (--plan|--execute)
+  update         Unified server update workflow (--plan|--execute)
   pull           Transfer Ubuntu to Windows (--plan|--execute)
   push           Windows to Ubuntu transfer (--plan|--execute)
   ignite         Start the authoritative host
-  update         Full Minecraft, Paper and plugin update (not yet implemented)
   preflight      Check both hosts and backup storage (read-only)
   help           Show this help
 
@@ -882,6 +884,30 @@ case "$command" in
     push)
         exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
         ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy addons --plan|--execute"
+        if [[ "$1" == "--plan" ]]; then
+            exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        fi
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons-deploy.py" --execute
+        ;;
+    update)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy update --plan|--execute"
+        if [[ "$1" == "--plan" ]]; then
+            exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        fi
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons-deploy.py" --execute
+        ;;
     paper-check)
         [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
         exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update --plan
@@ -891,9 +917,6 @@ case "$command" in
         [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
             die "Usage: ./hagonoy paper-update --plan|--execute"
         exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
-        ;;
-    update)
-        die "Full Minecraft-version, Paper and plugin update is not implemented yet. Use paper-check or paper-update for the existing Paper-only workflow."
         ;;
     restore|attach|playit-start|playit-stop)
         die "Command '$command' is not yet integrated into the dual-host coordinator. Refusing to run against local WSL paths."
@@ -952,8 +975,20 @@ case "$command" in
     dual-backup)
         shift
         [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Only dual-backup --plan is enabled through this interface. Execution is not yet approved."
+            die "Usage: ./hagonoy dual-backup --plan"
         exec "$PROJECT_DIR/bin/hagonoy-dual-backup" --plan
+        ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy addons --plan"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
         ;;
     pull|push|ignite|update)
         die "Dual-host command '$command' is not implemented yet. Refusing to execute."

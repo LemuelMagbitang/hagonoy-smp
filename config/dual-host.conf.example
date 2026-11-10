@@ -3,7 +3,7 @@
 
 # Windows server running through WSL2 TMUX with Windows-native Java.
 WINDOWS_SERVER_DIR="/mnt/d/Hagonoy-SMP/minecraft-server"
-WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/hsmp-evac-v2-win-backup"
+WINDOWS_BACKUP_DIR="/mnt/d/Hagonoy-SMP/server-backup"
 WINDOWS_TMUX_SESSION="mcserver"
 WINDOWS_JAVA="/mnt/c/Program Files/Eclipse Adoptium/jdk-25.0.5.8-hotspot/bin/java.exe"
 
