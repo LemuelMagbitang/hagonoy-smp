@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1184,15 +1185,9 @@ def update_paper_server(
         f".hagonoy-paper-{target_build}-{uuid.uuid4().hex}.jar"
     )
 
-    rollback_jar = directory / (
-        f"server.jar.rollback-{current_build}-"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
-        f"{uuid.uuid4().hex[:8]}"
-    )
-
-    failed_jar = directory / (
-        f"server.jar.failed-{target_build}-{uuid.uuid4().hex[:8]}"
-    )
+    transaction_dir = None
+    rollback_jar = None
+    keep_transaction = False
 
     print()
     print("========== DOWNLOAD AND VERIFY ==========")
@@ -1212,6 +1207,12 @@ def update_paper_server(
         ):
             fail("Generation changed during download. Refusing to update.")
 
+        transaction_dir = Path(tempfile.mkdtemp(
+            prefix=".hagonoy-paper-transaction-",
+            dir=str(directory.parent),
+        ))
+        rollback_jar = transaction_dir / "previous-server.jar"
+
         print()
         print("========== GRACEFUL SERVER STOP ==========")
         stop_managed_server(
@@ -1226,15 +1227,77 @@ def update_paper_server(
         ):
             fail("Server stop was not reflected in the expected generation.")
 
-        # Retain the prior executable JAR as a local rollback artifact.
-        shutil.copy2(server_jar, rollback_jar)
-        with rollback_jar.open("rb") as stream:
-            os.fsync(stream.fileno())
+        # Keep only a temporary copy of the previous executable JAR outside
+        # the canonical server directory. It is removed after success/rollback.
+        try:
+            shutil.copy2(server_jar, rollback_jar)
+            with rollback_jar.open("rb") as stream:
+                os.fsync(stream.fileno())
+            keep_transaction = True
+        except Exception as backup_error:
+            try:
+                start_managed_server(
+                    directory, session, port,
+                    ready_pattern, start_timeout
+                )
+            except Exception as restart_error:
+                fail(
+                    "Could not preserve the previous Paper JAR. The original "
+                    "JAR is unchanged, but Minecraft did not restart: "
+                    f"{backup_error}; {restart_error}"
+                )
+            fail(
+                "Could not preserve the previous Paper JAR. The original "
+                f"JAR is unchanged and Minecraft restarted: {backup_error}"
+            )
 
-        print(f"ROLLBACK_JAR={rollback_jar}")
-
-        os.replace(staged_jar, server_jar)
-        sync_directory(directory)
+        try:
+            os.replace(staged_jar, server_jar)
+            sync_directory(directory)
+        except Exception as install_error:
+            restore_temp = None
+            try:
+                restore_temp = directory / (
+                    f".hagonoy-restore-{uuid.uuid4().hex}.jar"
+                )
+                shutil.copy2(rollback_jar, restore_temp)
+                os.replace(restore_temp, server_jar)
+                sync_directory(directory)
+                keep_transaction = False
+            except Exception as restore_error:
+                if restore_temp is not None:
+                    try:
+                        restore_temp.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as cleanup_error:
+                        print(
+                            "[hagonoy-generation] WARNING: restore staging "
+                            f"file could not be removed: {restore_temp}: "
+                            f"{cleanup_error}",
+                            file=sys.stderr,
+                        )
+                keep_transaction = True
+                fail(
+                    "Paper JAR installation failed and the previous JAR could "
+                    "not be restored. Temporary recovery copy retained at "
+                    f"{rollback_jar}: {install_error}; {restore_error}"
+                )
+            try:
+                start_managed_server(
+                    directory, session, port,
+                    ready_pattern, start_timeout
+                )
+            except Exception as restart_error:
+                fail(
+                    "Paper JAR installation failed. The original JAR was "
+                    "restored, but Minecraft did not restart: "
+                    f"{restart_error}"
+                )
+            fail(
+                "Paper JAR installation failed. The original JAR was "
+                f"restored and Minecraft restarted: {install_error}"
+            )
 
         print()
         print("========== START UPDATED PAPER ==========")
@@ -1264,11 +1327,11 @@ def update_paper_server(
                     "match the requested stable update."
                 )
 
+            keep_transaction = False
             print("PAPER_UPDATE=SUCCESS")
             print(f"PAPER_BUILD={target_build}")
             print(f"GENERATION={updated['generation']}")
             print(f"GENERATION_ID={updated['generation_id']}")
-            print(f"ROLLBACK_JAR={rollback_jar}")
             return
 
         except Exception as start_error:
@@ -1280,29 +1343,48 @@ def update_paper_server(
 
             failed_generation = load(directory)
             if failed_generation is None or failed_generation["state"] != "running":
+                keep_transaction = True
                 fail(
                     "Update startup failed and generation state is unexpected. "
-                    f"Previous JAR retained at {rollback_jar}."
+                    "Previous JAR transaction retained at "
+                    f"{rollback_jar}."
                 )
 
-            mark_failed_start_stopped(
-                directory, session, port,
-                failed_generation["generation_id"]
-            )
+            try:
+                mark_failed_start_stopped(
+                    directory, session, port,
+                    failed_generation["generation_id"]
+                )
+            except Exception as stop_error:
+                keep_transaction = True
+                fail(
+                    "Updated server could not be confirmed stopped. Do not "
+                    "replace its JAR while Java may still be active. Previous "
+                    f"JAR transaction retained at {rollback_jar}: {stop_error}"
+                )
 
-            # Preserve the failed new JAR, then restore the previous build.
-            if server_jar.exists():
-                os.replace(server_jar, failed_jar)
-
+            # Replace the failed JAR in-place; do not leave a failed-JAR copy
+            # in the canonical directory.
             restore_temp = directory / (
                 f".hagonoy-restore-{uuid.uuid4().hex}.jar"
             )
-            shutil.copy2(rollback_jar, restore_temp)
-            os.replace(restore_temp, server_jar)
-            sync_directory(directory)
+            try:
+                shutil.copy2(rollback_jar, restore_temp)
+                os.replace(restore_temp, server_jar)
+                sync_directory(directory)
+                keep_transaction = False
+            except Exception as rollback_error:
+                try:
+                    restore_temp.unlink()
+                except FileNotFoundError:
+                    pass
+                keep_transaction = True
+                fail(
+                    "Paper rollback failed. Previous JAR transaction retained "
+                    f"at {rollback_jar}: {rollback_error}"
+                )
 
-            print(f"FAILED_UPDATE_JAR={failed_jar}")
-            print(f"RESTORED_ROLLBACK_JAR={rollback_jar}")
+            print("PREVIOUS_PAPER_JAR_RESTORED")
             print("RESTARTING_PREVIOUS_PAPER_BUILD")
 
             try:
@@ -1327,6 +1409,15 @@ def update_paper_server(
             staged_jar.unlink()
         except FileNotFoundError:
             pass
+        if transaction_dir is not None and transaction_dir.exists() and not keep_transaction:
+            try:
+                shutil.rmtree(transaction_dir)
+            except OSError as cleanup_error:
+                print(
+                    "[hagonoy-generation] WARNING: temporary Paper rollback "
+                    f"directory could not be removed: {transaction_dir}: {cleanup_error}",
+                    file=sys.stderr,
+                )
 
 
 def finish(directory):

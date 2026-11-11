@@ -12,7 +12,10 @@ done
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
 MOCK_BIN="$TEMP_ROOT/mock-bin"
-mkdir -p "$MOCK_BIN"
+LEGACY_PROJECT="$TEMP_ROOT/legacy-project"
+LEGACY_MANAGER="$LEGACY_PROJECT/bin/hagonoy"
+mkdir -p "$MOCK_BIN" "$LEGACY_PROJECT/bin"
+cp -- "$ROOT/bin/hagonoy" "$LEGACY_MANAGER"
 
 cat > "$MOCK_BIN/curl" <<'MOCK'
 #!/usr/bin/env bash
@@ -176,7 +179,7 @@ PAPER_PREVIOUS_JAR_RETENTION="3"
 CONFIG
 
     local output rc check_output
-    check_output="$(env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$ROOT/hagonoy" paper-check 2>&1)"
+    check_output="$(env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$LEGACY_MANAGER" paper-check 2>&1)"
     grep -Fq 'Installed Paper build:       61' <<< "$check_output" || {
         printf '[FAIL] %s scenario: installed build was not detected\n%s\n' "$name" "$check_output" >&2
         return 1
@@ -189,7 +192,7 @@ CONFIG
 
     if [[ "$fail_new" == "true" ]]; then
         set +e
-        output="$(printf 'y\n' | env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$ROOT/hagonoy" paper-update 2>&1)"
+        output="$(printf 'y\n' | env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$LEGACY_MANAGER" paper-update 2>&1)"
         rc=$?
         set -e
         [[ "$rc" -ne 0 ]] || {
@@ -210,7 +213,7 @@ CONFIG
         }
         printf '[OK] Failed startup restores previous JAR and restarts old build\n'
     else
-        output="$(printf 'y\n' | env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$ROOT/hagonoy" paper-update 2>&1)"
+        output="$(printf 'y\n' | env PATH="$MOCK_BIN:$PATH" HAGONOY_CONFIG="$scenario/manager.conf" MOCK_DOWNLOAD_FILE="$new_jar" MOCK_API_RESPONSE="$api_response" MOCK_MC_DIR="$mc_dir" MOCK_STATE_FILE="$state_file" MOCK_NEW_SHA="$new_sha" MOCK_MC_VERSION=26.1.2 MOCK_OLD_BUILD=61 MOCK_NEW_BUILD=74 MOCK_FAIL_NEW="$fail_new" "$LEGACY_MANAGER" paper-update 2>&1)"
         [[ "$(sha256sum "$mc_dir/server.jar" | awk '{print $1}')" == "$new_sha" ]] || {
             printf '[FAIL] %s scenario: new JAR was not installed\n%s\n' "$name" "$output" >&2
             return 1
@@ -219,8 +222,8 @@ CONFIG
             printf '[FAIL] %s scenario: updated server did not start\n%s\n' "$name" "$output" >&2
             return 1
         }
-        find "$mc_dir" -maxdepth 1 -type f -name 'server.jar.previous-*' | grep -q . || {
-            printf '[FAIL] %s scenario: previous JAR was not retained\n' "$name" >&2
+        [[ "$(find "$mc_dir" -maxdepth 1 -type f -name 'server.jar.previous-*' | wc -l)" -eq 4 ]] || {
+            printf '[FAIL] %s scenario: updater left a new persistent previous-JAR copy\n' "$name" >&2
             return 1
         }
 
@@ -233,27 +236,38 @@ CONFIG
         done
         printf '[OK] Existing previous Paper JARs are preserved; no automatic pruning\n'
 
-        local backup
-        backup="$(find "$backup_dir" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' | head -n 1)"
-        [[ -n "$backup" ]] && tar -tf "$backup" >/dev/null || {
-            printf '[FAIL] %s scenario: pre-update backup missing or unreadable\n' "$name" >&2
+        [[ "$(find "$backup_dir" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' | wc -l)" -eq 4 ]] || {
+            printf '[FAIL] %s scenario: Paper update created an automatic TAR backup\n' "$name" >&2
             return 1
         }
         grep -Fq 'Paper update successful: Minecraft 26.1.2, Paper build 74.' <<< "$output" || {
             printf '[FAIL] %s scenario: update success confirmation missing\n%s\n' "$name" "$output" >&2
             return 1
         }
-        printf '[OK] Stable Paper update verifies JAR, backs up, preserves old JAR and starts new build\n'
+        printf '[OK] Stable Paper update verifies JAR, creates no TAR backup or persistent rollback JAR, and starts new build\n'
     fi
 
     for index in 1 2 3 4; do
         backup_fixture="$backup_dir/hagonoy-smp-2020010${index}-000000.tar"
+        jar_fixture="$mc_dir/server.jar.previous-2020010${index}-000000-build$((50 + index))"
         [[ -f "$backup_fixture" ]] || {
             printf '[FAIL] %s scenario: existing backup archive was deleted: %s\n' "$name" "$backup_fixture" >&2
             return 1
         }
+        [[ -f "$jar_fixture" ]] || {
+            printf '[FAIL] %s scenario: existing Paper JAR recovery artifact was deleted: %s\n' "$name" "$jar_fixture" >&2
+            return 1
+        }
     done
-    printf '[OK] Existing backup archives are preserved; no automatic pruning\n'
+    [[ -z "$(find "$scenario" -maxdepth 1 -type d -name '.hagonoy-paper-rollback.*' -print -quit)" ]] || {
+        printf '[FAIL] %s scenario: temporary Paper rollback directory was left behind\n' "$name" >&2
+        return 1
+    }
+    [[ "$(find "$backup_dir" -maxdepth 1 -type f -name 'hagonoy-smp-*.tar' | wc -l)" -eq 4 ]] || {
+        printf '[FAIL] %s scenario: automatic TAR backup was created\n' "$name" >&2
+        return 1
+    }
+    printf '[OK] Existing backups and recovery JARs are preserved; no automatic backup or persistent rollback copy\n'
 }
 
 run_scenario "success" "false"
