@@ -95,3 +95,15 @@ The user supplied two private ChatGPT conversation URLs marking the start and cu
 ## Handoff protocol
 
 At each continuation, read this memory together with current conversation context. The user's newest explicit direction wins over stale notes. After substantial work, update this file with verified decisions, state, tests, commits, and next action. Never store credentials, tokens, private keys, or other secrets.
+
+
+## Latest addons checkpoint — 2026-11-12
+
+Source: command output supplied by the user in the current continuation.
+
+- `./hagonoy addons list` reports 13 approved VanillaTweaks datapacks in `config/approved-datapacks.json`.
+- `./hagonoy status` reports Ubuntu LIVE: RUNNING; Windows canonical: STOPPED; Windows staging: STOPPED. The status command explicitly reports read-only behavior.
+- `./hagonoy addons plan --host ubuntu` reports `DATAPACK_RUNTIME=RUNNING`, all 13 approved packs as `[ADD]` because each is missing, and `DATAPACK_PLAN=READY`.
+- This is a plan, not a deployment. No live-world datapack changes, reload, or enablement have been confirmed.
+- Do not run sync based only on this plan output. Deployment remains a separate action requiring the user's explicit authorization.
+- Immediate next checkpoint: obtain explicit approval for adding all 13 listed approved packs to the Ubuntu live world; then execute the standalone Ubuntu sync and verify on-disk files plus runtime enabled-pack readback.
