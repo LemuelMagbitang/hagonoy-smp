@@ -107,3 +107,17 @@ Source: command output supplied by the user in the current continuation.
 - This is a plan, not a deployment. No live-world datapack changes, reload, or enablement have been confirmed.
 - Do not run sync based only on this plan output. Deployment remains a separate action requiring the user's explicit authorization.
 - Immediate next checkpoint: obtain explicit approval for adding all 13 listed approved packs to the Ubuntu live world; then execute the standalone Ubuntu sync and verify on-disk files plus runtime enabled-pack readback.
+
+
+## Datapack sync incident — 2026-11-12
+
+Source: complete `./hagonoy addons sync --host ubuntu` output supplied by the user.
+
+- The command planned 13 additions, then reported `[INSTALLED_AND_HASH_VERIFIED]` for all 13 approved VanillaTweaks ZIP files.
+- After all file writes and hash checks, the remote helper timed out waiting for Minecraft to confirm `reload`.
+- The helper explicitly warned that the command may have run but its result is unverified and pointed to `/home/leonardodavinci/minecraft-server/logs/latest.log`.
+- The addons command exited 1 because reload confirmation was inconclusive.
+- Established: 13/13 archive writes were reported hash-verified before the runtime timeout.
+- Not established: whether reload executed/completed, whether any datapacks loaded, or which packs are currently enabled.
+- Treat this as a partial deployment with uncertain runtime state. Do not blindly rerun sync, restart the server, remove packs, or repeat reload until logs and a read-only `/datapack list enabled` query have been checked.
+- No full backup was made or requested as part of this operation.
