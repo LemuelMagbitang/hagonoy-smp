@@ -360,3 +360,17 @@ The exact local helper and test excerpts were supplied by the user. A guarded ap
 - Extend the main runtime fixture to simulate Paper's observed `Reloading!` response and delay the enabled-list response across multiple poll cycles. Assert progress output and successful final runtime verification.
 - Exact-anchor guard: the patcher checks each inspected source block occurs exactly once before writing either file. It does not contact Minecraft.
 - Application, full fixture test run, and review of the real WSL diff are still pending. Do not rerun sync or reload to test this tooling change; all 13 custom packs are already confirmed enabled in Ubuntu.
+
+### Bundle packaging follow-up — 2026-11-12
+
+The user attempted to invoke the script before extracting the ZIP; consequently `apply-fix.py` was not present at the target path. The original fixture tests they ran still passed against the old helper and therefore do not validate the proposed slow-reload fix. Their `git diff --check` reported a new blank line at EOF in `tests/datapack-deploy-check.py`.
+
+A refreshed archive, `hsmp-reload-confirmation-fix-v2.zip`, was created and verified with `unzip -t`. Its patcher keeps the same exact-anchor guards and additionally normalizes trailing newlines in the edited test file. It remains unapplied; do not assume the local helper has changed.
+
+Correct WSL application sequence:
+```bash
+cd ~/hagonoy-smp &&
+unzip -o /mnt/c/Users/lemue/Downloads/hsmp-reload-confirmation-fix-v2.zip -d /mnt/c/Users/lemue/Downloads &&
+python3 /mnt/c/Users/lemue/Downloads/hsmp-reload-confirmation-fix/apply-fix.py .
+```
+Then run py_compile, the datapack fixture test, and `git diff --check`. This remains offline code maintenance only; do not rerun live sync/reload.
