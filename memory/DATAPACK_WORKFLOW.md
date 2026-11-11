@@ -238,3 +238,50 @@ Deployment gate:
 - After sync, capture the complete output and verify every expected ZIP on disk by filename and SHA-256. For a running server, confirm reload completion and verify actual pack names in `/datapack list enabled`.
 - If a newly added pack is present but disabled, report it accurately; never auto-enable it without separate approval.
 - If sync reports any error or runtime verification is incomplete, stop and diagnose before retrying. Do not create a full backup automatically.
+
+
+## Deployment attempt and runtime timeout — 2026-11-12
+
+The user ran `./hagonoy addons sync --host ubuntu` and provided the complete output.
+
+### What succeeded
+
+The helper emitted `[INSTALLED_AND_HASH_VERIFIED]` for each of the 13 approved packs:
+
+1. afk display v1.1.18 (MC 26.3).zip
+2. anti enderman grief v1.1.18 (MC 26.3).zip
+3. chunk loaders v1.0.19 (MC 26.3).zip
+4. durability ping v1.1.19 (MC 26.3).zip
+5. more mob heads v2.20.1 (MC 26.3).zip
+6. multiplayer sleep v2.6.18 (MC 26.3).zip
+7. name colors v1.0.16 (MC 26.3).zip
+8. painting picker v1.1.5 (MC 26.3).zip
+9. player head drops v1.1.18 (MC 26.3).zip
+10. silence mobs v1.2.12 (MC 26.3).zip
+11. track raw statistics v1.7.14 (MC 26.3).zip
+12. track statistics v1.1.20 (MC 26.3).zip
+13. villager workstation highlights v1.1.18 (MC 26.3).zip
+
+### What failed / remains unknown
+
+After the 13 successful write/hash reports, remote helper output:
+
+`ERROR: Timed out waiting for Minecraft to confirm 'reload'. The command may have run, but its result is unverified. Check /home/leonardodavinci/minecraft-server/logs/latest.log.`
+
+The caller then reported sync failure and exit code 1.
+
+This does not prove reload failed. It proves only that the expected confirmation was not observed before timeout. The server may have accepted the command and completed reload, may still be processing it, or may not have received it. Enabled state is unknown until queried.
+
+### Mandatory recovery sequence
+
+- Do not rerun sync immediately: the 13 archives were already reported installed and hash-verified.
+- Do not remove or overwrite any of the files.
+- Do not restart or stop the live server just to clear this error.
+- Read the relevant recent reload/datapack/error entries from `/home/leonardodavinci/minecraft-server/logs/latest.log`.
+- Query the running server with the read-only console command `datapack list enabled` (without slash when sent to the server console) and capture the returned output.
+- Verify whether all 13 expected datapacks appear enabled. If they are present but disabled, report that accurately; do not enable them automatically.
+- If logs show reload still running, errors, or incomplete datapack loading, diagnose the first concrete failure before another action.
+- Once runtime state is known, run the read-only addons plan again only if needed to confirm the on-disk inventory; do not mistake an all-present disk plan for proof of enabled status.
+- Do not create a full backup automatically; no backup was part of this operation.
+
+Current status: **files reported installed and hash-verified 13/13; reload confirmation timed out; enabled state unverified.**
