@@ -173,6 +173,8 @@ The follow-up was tested against a synthetic repository fixture matching the kno
 
 The bundle currently exists as a ChatGPT-generated artifact for the user to apply to the WSL checkout. It has not been committed into the user's local branch or the repository by this review. If the local source hashes differ, stop and reconcile rather than forcing the patch.
 
+Additional offline tests were added after the initial record: a newly installed pack that appears under `available` but not `enabled` now fails verification without auto-enabling it; an already-present disabled pack is reported as `AVAILABLE_NOT_ENABLED` and preserved. The expanded test suite passed again on 2026-11-12.
+
 ## Remaining work
 
 1. Apply/reconcile the follow-up against the exact WSL checkout; preserve the user's actual approval manifest.
