@@ -216,3 +216,25 @@ Next safe sequence is to inspect the real manifest with `./hagonoy addons list`,
 ## Continuity discipline
 
 Update this document when a user decision changes, when a code defect is verified/fixed, or when a test or live operation establishes new state. Label observations by source and date. Never store credentials, tokens, private keys, or other secrets. Never claim a live datapack was installed or enabled based on offline fixture tests.
+
+
+## Live-world planning checkpoint — 2026-11-12
+
+User-provided WSL output establishes this checkpoint:
+
+1. `./hagonoy addons list` printed 13 approved VanillaTweaks ZIP entries, all marked for Minecraft 26.3.
+2. `./hagonoy status` printed Ubuntu LIVE as RUNNING and both Windows canonical and Windows staging as STOPPED.
+3. `./hagonoy addons plan --host ubuntu` printed `DATAPACK_HOST=UBUNTU`, `DATAPACK_RUNTIME=RUNNING`, exactly 13 `[ADD]` rows (one for every approved manifest entry), and `DATAPACK_PLAN=READY`.
+
+Interpretation:
+- The plan sees all 13 approved packs as absent from the selected Ubuntu world and eligible to be added.
+- No `PRESENT` or `CONFLICT` row appeared in this plan output.
+- `READY` is the manager's planning result, not proof that deployment has happened or that the packs are enabled.
+- The plan output does not itself confirm successful file writes, reload completion, or `/datapack list enabled` state.
+
+Deployment gate:
+- Do not execute `./hagonoy addons sync --host ubuntu` until the user explicitly authorizes adding these 13 packs to the Ubuntu live world.
+- Once authorized, use the standalone addons sync only. Do not route through `start`, `update`, Paper updates, or unrelated plugin maintenance.
+- After sync, capture the complete output and verify every expected ZIP on disk by filename and SHA-256. For a running server, confirm reload completion and verify actual pack names in `/datapack list enabled`.
+- If a newly added pack is present but disabled, report it accurately; never auto-enable it without separate approval.
+- If sync reports any error or runtime verification is incomplete, stop and diagnose before retrying. Do not create a full backup automatically.
