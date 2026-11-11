@@ -76,6 +76,18 @@ Windows server and staging paths appear in WSL as `/mnt/d/Hagonoy-SMP/...`. Do n
 5. Run focused tests, then review host-switching and backup utilities.
 6. For live maintenance, identify the current authoritative host, run preflight, stop gracefully only when needed, then verify the server is healthy and running again.
 
+## Current addons/datapack work focus (2026-11-12)
+
+The user explicitly directed that the current session resume the addons/datapack tools now. This is the active work focus, even though the core Paper/Geyser/Floodgate updater remains a separate unfinished responsibility.
+
+The detailed subsystem record is `memory/DATAPACK_WORKFLOW.md`. Read it alongside this project memory before continuing addon/datapack implementation. It records command semantics, safety invariants, target paths, source/staging/transport behavior, runtime verification requirements, recovered-code audit findings, and the follow-up patch status.
+
+Important current distinctions:
+- The 13 VanillaTweaks packs were recorded as registered in prior work; the exact manifest in the user's current WSL worktree was not directly inspected in this turn. Preserve it.
+- The earlier additive manager patch was recovered from Library material and inspected. Findings about it are not proof that the unshared local WSL worktree has identical file contents.
+- A reviewed follow-up bundle was prepared and offline-tested. It has not yet been applied to the user's WSL checkout, committed to the user's branch, or used against either live host.
+- No datapack was deployed, enabled, removed, overwritten, or changed in a live world during this review.
+
 ## Conversation-history audit limitation
 
 The user supplied two private ChatGPT conversation URLs marking the start and current end of a long, branched HSMP history. Direct retrieval of those `/c/` URLs was blocked. The accessible Library contains supporting scripts, patches, and pasted terminal-output snapshots, some of which were read to confirm paths and implementation history; these are not a complete transcript of all 23+ branches. Never claim the full history has been read until an accessible conversation export/transcript is supplied.
