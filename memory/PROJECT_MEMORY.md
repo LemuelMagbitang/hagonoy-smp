@@ -146,3 +146,18 @@ Source: user supplied live Ubuntu SSH terminal output.
 - No live server command, reload, sync, backup, or world-file change was performed for this tooling fix.
 
 - Bundle packaging follow-up: the initial download was not extracted by the user, so the apply script path was naturally absent. The ZIP was rebuilt as `hsmp-reload-confirmation-fix-v2.zip`; it passes `unzip -t` and now normalizes the edited test file's trailing newlines to prevent the reported `git diff --check` blank-line warning. It is still unapplied to WSL.
+
+
+## Slow-reload correction applied and tested — 2026-11-12
+
+Source: user-provided WSL command output.
+
+- Applied `hsmp-reload-confirmation-fix-v2` successfully.
+- Updated local files:
+  - `bin/hagonoy-datapacks-remote.py`, SHA-256 `7220b8bb598f9ff648bd797a00ef7841a69647faa19b391ae808b1f621c75bc7`
+  - `tests/datapack-deploy-check.py`, SHA-256 `53dc7dbdffc397b66ac1686059ac051a3fadb52ac8dafb6972d649cc556784ef`
+- Python bytecode compilation passed.
+- `tests/datapack-deploy-check.py` passed all additive install, registration, staging, runtime verification, slow-reload, and disabled-pack tests. New slow-reload fixture specifically reports that queued enabled-list readback confirmed the new pack and wait progress was reported.
+- `git diff --check` completed with no output/error (clean).
+- Patch application explicitly made no Minecraft host contact, reload, sync, backup, or world-file operation.
+- The local diff has not yet been reviewed in full or committed/pushed. Next: inspect `git diff --stat`, working-tree status, and the focused diff for the two changed files; confirm the code implements the stated bounded wait and final enabled-pack verification exactly. Do not run a live reload to test it.
