@@ -285,3 +285,65 @@ This does not prove reload failed. It proves only that the expected confirmation
 - Do not create a full backup automatically; no backup was part of this operation.
 
 Current status: **files reported installed and hash-verified 13/13; reload confirmation timed out; enabled state unverified.**
+
+
+## Successful live deployment — 2026-11-12
+
+### Installation result
+
+The user executed `./hagonoy addons sync --host ubuntu`. The sync output reported `[INSTALLED_AND_HASH_VERIFIED]` for all 13 manifest entries:
+
+- afk display v1.1.18 (MC 26.3).zip
+- anti enderman grief v1.1.18 (MC 26.3).zip
+- chunk loaders v1.0.19 (MC 26.3).zip
+- durability ping v1.1.19 (MC 26.3).zip
+- more mob heads v2.20.1 (MC 26.3).zip
+- multiplayer sleep v2.6.18 (MC 26.3).zip
+- name colors v1.0.16 (MC 26.3).zip
+- painting picker v1.1.5 (MC 26.3).zip
+- player head drops v1.1.18 (MC 26.3).zip
+- silence mobs v1.2.12 (MC 26.3).zip
+- track raw statistics v1.7.14 (MC 26.3).zip
+- track statistics v1.1.20 (MC 26.3).zip
+- villager workstation highlights v1.1.18 (MC 26.3).zip
+
+### Runtime confirmation and interpretation
+
+The first sync command exited 1 because the helper timed out waiting for a `reload` acknowledgement. The user then inspected Ubuntu's `logs/latest.log` and queried the live console.
+
+Log evidence:
+- `22:22:20`: `System chat: Reloading!`
+- `22:22:30` and `22:22:35`: Paper watchdog warnings that the server thread had not responded for 10/15 seconds.
+- Thread dump remained in `MinecraftServer.reloadResources` / `ReloadCommand`; the visible stack was parsing YAML through SnakeYAML in Bukkit `HelpYamlReader` / `SimpleHelpMap.initializeGeneralTopics`.
+- This establishes that resource reload was in progress and temporarily stalled the main server thread. It does not identify the offending YAML file/plugin or establish why parsing took several minutes.
+- `22:26:25`: Minecraft responded to `datapack list enabled` with 16 enabled datapacks.
+
+The enabled list explicitly contains all 13 approved custom datapacks:
+1. afk display
+2. anti enderman grief
+3. chunk loaders
+4. durability ping
+5. more mob heads
+6. multiplayer sleep
+7. name colors
+8. painting picker
+9. player head drops
+10. silence mobs
+11. track raw statistics
+12. track statistics
+13. villager workstation highlights
+
+The other 3 entries were `vanilla`, `paper`, and `bukkit` (built-in/server entries). Thus all 13 custom packs are confirmed **enabled**, not merely present as files. The live Ubuntu deployment objective is achieved.
+
+### Remaining tool defect / next engineering phase
+
+The manager treated a slow reload as an operation failure because the remote helper's acknowledgement wait expired before the Minecraft server finished processing reload. The server eventually recovered and answered the read-only enabled-list command. Improve helper behavior so a slow reload is distinguished from a failed reload:
+
+- Inspect current local helper implementation before editing; GitHub main does not contain the user's unpushed working tree source files.
+- Keep the timeout bounded, but make the deadline appropriate for real Paper resource reloads and expose elapsed time/progress/status.
+- If the reload acknowledgement channel is delayed by the blocked server thread, continue polling safely within the bounded deadline instead of immediately treating the first timeout as failure.
+- Always perform final runtime readback using `datapack list enabled`; require all expected approved pack names before reporting complete success.
+- If the final response is partial or ambiguous, report `installed; reload/runtime unverified`, not a misleading generic failure or success.
+- Add fixture tests for slow acknowledgement, delayed command processing, reload failure, missing enabled packs, and complete success.
+- Do not trigger another reload on the live server merely to test the helper. The 13 packs are already successfully enabled.
+- Do not auto-reload or re-run sync as part of core server start/update. Datapack management remains a separate workflow.
