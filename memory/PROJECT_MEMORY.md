@@ -121,3 +121,17 @@ Source: complete `./hagonoy addons sync --host ubuntu` output supplied by the us
 - Not established: whether reload executed/completed, whether any datapacks loaded, or which packs are currently enabled.
 - Treat this as a partial deployment with uncertain runtime state. Do not blindly rerun sync, restart the server, remove packs, or repeat reload until logs and a read-only `/datapack list enabled` query have been checked.
 - No full backup was made or requested as part of this operation.
+
+
+## Datapack deployment verified — 2026-11-12
+
+Source: user supplied live Ubuntu SSH terminal output.
+
+- The standalone command `./hagonoy addons sync --host ubuntu` reported `[INSTALLED_AND_HASH_VERIFIED]` for all 13 approved VanillaTweaks ZIPs.
+- The helper then timed out waiting for Minecraft's `reload` confirmation and returned exit code 1. This was a runtime-confirmation timeout, not evidence that the file installation failed.
+- The user queried the live Minecraft console with `datapack list enabled`. At 22:26:25 the server answered: 16 datapacks enabled.
+- The returned list contains the 3 expected pre-existing vanilla/Paper/Bukkit entries and all 13 approved VanillaTweaks packs. Therefore all 13 custom packs are confirmed enabled in the Ubuntu live world.
+- The reload began at 22:22:20 (`Reloading!`). Paper watchdog warnings occurred at 22:22:30 and 22:22:35. Thread dump during resource reload showed the server thread parsing YAML via SnakeYAML from Bukkit `HelpYamlReader` / `SimpleHelpMap.initializeGeneralTopics`. The server later processed the enabled-pack query at 22:26:25, proving it recovered and was responsive then.
+- Exact cause of the long HelpYamlReader/YAML parse is not established; do not blame a particular plugin or YAML file without additional evidence.
+- Deployment objective achieved: all 13 approved custom datapacks are installed and enabled on Ubuntu. No evidence of Windows deployment; Windows remains outside this operation.
+- Follow-up engineering task: inspect local `bin/hagonoy-datapacks-remote.py` reload wait/confirmation logic and adjust it to tolerate genuinely slow resource reloads while retaining a bounded timeout, progress/status, and definitive post-reload `datapack list enabled` verification. Avoid interpreting a missing quick acknowledgement as failure if the reload is still processing. Test this using fixtures; do not cause another live reload just to test the helper.
