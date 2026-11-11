@@ -144,3 +144,5 @@ Source: user supplied live Ubuntu SSH terminal output.
 - The test fixture is changed to simulate a delayed enabled-list response and verify that the helper waits and reports progress.
 - The bundle was only prepared and its patch anchors were validated against reconstructed excerpts. It has not yet been applied to the user's WSL checkout or run against the full test file.
 - No live server command, reload, sync, backup, or world-file change was performed for this tooling fix.
+
+- Bundle packaging follow-up: the initial download was not extracted by the user, so the apply script path was naturally absent. The ZIP was rebuilt as `hsmp-reload-confirmation-fix-v2.zip`; it passes `unzip -t` and now normalizes the edited test file's trailing newlines to prevent the reported `git diff --check` blank-line warning. It is still unapplied to WSL.
