@@ -1,0 +1,188 @@
+# HSMP Datapack / Addons Workflow Memory
+
+Last updated: 2026-11-12 (Asia/Manila)
+
+## Purpose and authority
+
+This document records the intended design and the inspected implementation of HSMP's custom datapack management tools. It is a continuity aid. The user's latest explicit instructions are authoritative; neither this document nor older code may override them.
+
+The user's current direction (2026-11-12) is to resume work on the addons/datapack maintenance tools now. The earlier plan to finish the core software updater first is not a reason to postpone this user-directed work.
+
+The server's major migration to Minecraft 26.3 / Paper 26.3 is already complete. This work is about safely maintaining custom world datapacks, not repeating the migration.
+
+## Scope
+
+This workflow is for the custom VanillaTweaks datapacks registered for the HSMP world.
+
+It is separate from the core server software updater:
+
+- Core software updater: Paper, Geyser, Floodgate only; detect and update already-installed/managed components; no silent installs of missing components; Chunky is out of scope.
+- Datapack manager: user-approved custom VanillaTweaks ZIP packs for the selected canonical world.
+- Built-in datapack entries `vanilla`, `bukkit`, and `paper` are not separate downloadable pack targets. Paper is server software.
+
+Do not attach datapack work to `start`, `restart`, or the core `update` operation. The user must be able to start the server without an implicit datapack download, copy, removal, or reload. Datapack actions are standalone `addons` commands.
+
+## Vocabulary — keep these states distinct
+
+1. **Source available**: a ZIP exists in the configured downloads folder.
+2. **Registered / approved**: its filename, source, byte count, SHA-256, and compatibility metadata are recorded in `config/approved-datapacks.json`.
+3. **Staged**: the manager has re-read the approved source, rechecked byte count and SHA-256, and prepared the transport payload.
+4. **Installed on disk**: the approved ZIP exists under the selected world's `datapacks` directory and its bytes match the approved SHA-256.
+5. **Enabled at runtime**: Minecraft reports the ZIP in `/datapack list enabled` after a running-world reload or server start.
+
+Registration, planning, staging, and installation are not interchangeable. Never report a pack as enabled merely because it is present in the manifest or on disk.
+
+Prior work recorded 13 VanillaTweaks packs as registered for Minecraft 26.3. The exact manifest from the latest private WSL worktree was not available during the 2026-11-12 review. Do not replace or regenerate the user's manifest from an older initial empty-manifest template.
+
+## Intended command interface
+
+Run from the HSMP repository root:
+
+```bash
+./hagonoy addons list
+./hagonoy addons add <filename.zip>
+./hagonoy addons add-bundle <VanillaTweaks-bundle.zip>
+./hagonoy addons plan --host ubuntu
+./hagonoy addons plan --host windows
+./hagonoy addons sync --host ubuntu
+./hagonoy addons sync --host windows
+```
+
+The no-argument host default may be Ubuntu, but operational commands should state the chosen host explicitly in logs. The old `./hagonoy addons --plan` spelling may remain as a compatibility alias, but it must route to the datapack-only planner, never the old broad inventory of Paper/plugins/Chunky.
+
+Command semantics:
+
+- `list`: show registered approvals only; no server contact or world mutation.
+- `add`: register one ZIP found inside `D:\\Hagonoy-SMP\\server-update-downloads`; no server contact or world mutation.
+- `add-bundle`: inspect a VanillaTweaks `UNZIP_ME` bundle and register its compatible nested ZIPs individually; no server contact or world mutation.
+- `plan`: inspect the selected canonical world and show `PRESENT`, `ADD`, or `CONFLICT`; read-only.
+- `sync`: the explicit mutating command. Add only approved, missing ZIPs to one selected canonical world. It never overwrites a different existing file and never removes or prunes unselected packs.
+
+Do not call `sync` from lifecycle scripts. Do not run it merely because a pack was registered. A user invocation of the separate `addons sync` command is the explicit action that authorizes the additions in that run.
+
+The earlier implementation included a `prestart` action and inserted automatic pre-start/start/update calls. The intended follow-up removes the `prestart` action and all lifecycle hooks. A stopped server can receive an explicitly requested `sync`; those files are then loaded on the next normal server start.
+
+## Source and configuration paths
+
+- Approved manifest: `config/approved-datapacks.json`
+- Dual-host configuration: `config/dual-host.conf`
+- Download/source folder: `D:\\Hagonoy-SMP\\server-update-downloads` (WSL: `/mnt/d/Hagonoy-SMP/server-update-downloads`)
+- Ubuntu live server: `/home/leonardodavinci/minecraft-server`
+- Windows live server: `D:\\Hagonoy-SMP\\minecraft-server` (WSL path: `/mnt/d/Hagonoy-SMP/minecraft-server`)
+- Ubuntu manager checkout historically observed: `/home/leonardodavinci/hagonoy-smp`
+- User's WSL development checkout: `/home/lemuel/hagonoy-smp`
+
+The source ZIP may be a standalone file or an entry inside a VanillaTweaks bundle. The manager checks the source is in the configured downloads folder, validates ZIP structure and top-level `pack.mcmeta`, verifies Minecraft 26.3 data-pack format 121.0 compatibility, and records byte count and SHA-256.
+
+At sync time, the source must still exist and match the registered byte count and SHA-256. If it changed, stop and require deliberate re-registration/review. Do not silently adopt new bytes from the download folder.
+
+## Target world and dual-host safety
+
+The remote helper resolves the actual world name from `server.properties` (`level-name`) and targets:
+
+`<selected-server>/<level-name>/datapacks/`
+
+Do not assume the world folder is always named `world`; `server.properties` is the source for the configured world name. Refuse unsafe world paths, symlink world/datapacks paths, or an unsafe `server.properties`.
+
+Only one authoritative server host may be targeted. Before writing, the manager checks that the *other* host is stopped. The intended checks cover the opposite host's configured tmux session and Minecraft TCP / Bedrock UDP listeners. The selected target is checked against `.hagonoy-generation.json` host and running/stopped state, plus the tmux session and Minecraft TCP listener. A mismatch or ambiguous runtime must block the operation.
+
+The user-confirmed host layout is:
+- Windows live server: `D:\\Hagonoy-SMP\\minecraft-server`
+- Ubuntu live server: `/home/leonardodavinci/minecraft-server`
+
+Do not copy the same registered files to both hosts in one implicit operation. The selected canonical host is the only write target.
+
+## Additive-only safety invariants
+
+These invariants are mandatory:
+
+- Validate the whole approved manifest before acting.
+- Re-read and hash-check every source at staging time.
+- Validate every pending ZIP before the first live-world write.
+- Preflight every approved pack against the target world before writing any of them.
+- Same filename + same SHA-256 is idempotently `PRESENT`.
+- Same filename with different content is a conflict.
+- Same logical pack identity (for example, same pack name at a different version filename) is a conflict, not an implicit upgrade.
+- An existing directory, symlink, or other path occupying an approved pack identity is a conflict.
+- On any preflight conflict, make no changes.
+- Publish complete files without overwriting an existing target; use atomic hard-link publication where supported and exclusive-create fallback where needed.
+- Verify byte length and SHA-256 after staging and after installation.
+- Never delete an installed pack because it is absent from the approved manifest or a later VanillaTweaks bundle.
+- Never overwrite a different installed version implicitly.
+- Never enable/disable, reorder, or remove an existing pack automatically. An already-present but disabled pack is left unchanged.
+- No full TAR backup is created by this workflow. Full backups remain a separate, explicitly authorized action.
+
+If a disk or I/O failure interrupts a multi-pack copy after some individual files have been atomically published, report exactly which files were installed. A later plan/sync must be safe to rerun: installed same-hash files become `PRESENT`; no overwrites or deletion are allowed.
+
+## Runtime activation and verification
+
+For a stopped selected server:
+- Sync verifies the files on disk and reports they will be loaded on the next normal start.
+- It does not start the server.
+
+For a running selected server:
+1. After new files are installed and hash-verified, send `reload` to the exact console pane `=<tmux-session>:0.0`.
+2. Wait for a positive reload completion response in `logs/latest.log`; a command merely being sent is not proof it completed.
+3. Run `datapack list enabled` and verify each newly installed pack appears under its `file/<filename>` id.
+4. If a newly added pack is shown under `datapack list available` but not enabled, report that state and do not silently enable it. If it appears in neither list, report runtime discovery failure. Keep the installed files intact for investigation.
+
+Existing packs that were already present but disabled must be reported as such and left untouched. The manager must not change user load order or pack enablement.
+
+Minecraft behavior reference: data packs placed in an existing world's `datapacks` directory are reloaded with `/reload`, and `/datapack list enabled` verifies which packs are active. Certain registry/world-generation content may require reopening/restarting the world rather than an in-place reload. See Minecraft Wiki's [reload command](https://minecraft.wiki/w/Commands/reload), [datapack command](https://minecraft.wiki/w/Commands/datapack), and [multiplayer import instructions](https://minecraft.wiki/w/Tutorial:Importing_a_data_pack).
+
+## Inspected earlier implementation — findings and gaps
+
+Audit basis: the original additive datapack patch was recovered from the ChatGPT project Library and its payload files were extracted and reviewed on 2026-11-12. The exact current WSL branch/worktree was not accessible in this review. Therefore, these are verified findings about that recovered patch version, not a claim that the user's current local files are identical.
+
+### Existing useful behavior
+
+- `bin/hagonoy-datapacks.py` provides registration, bundle registration, listing, plan, and sync commands.
+- `bin/hagonoy-datapacks-remote.py` handles target-world inspection and additive installation.
+- `config/approved-datapacks.json` stores the approval inventory. Preserve the actual user's copy.
+- `tests/datapack-deploy-check.py` uses temporary test worlds; it does not require a live server.
+- The remote installer detects exact same-content files, conflicts, duplicate logical identities, directories, and symlinks; it preflights conflicts before writing and retains unselected packs.
+- The manager checks that the opposite host is stopped and that the target generation/runtime matches.
+
+### Defects found in that patch version
+
+1. The registration success message falsely said packs would be installed by the next `start` or `update`.
+2. The integration patch wired datapack sync/planning into Ubuntu `start`, Windows `start`, and the core `update` path. This contradicts the separate-workflow rule.
+3. `./hagonoy addons --plan` was special-routed to the old broad addon inventory, rather than the datapack-only planner. That inventory also mentioned components such as Chunky, which is outside the core update scope.
+4. The remote helper recursively deleted its supplied staging path in a `finally` block. Cleanup ownership belongs to the orchestrator that created a manager-generated stage directory; the helper must never delete an arbitrary caller-supplied directory.
+5. The manager could leave a staging directory behind if source validation failed during stage construction.
+6. The original installer validated each staged ZIP immediately before writing that ZIP. It should validate every pending ZIP first, then begin writes, so an invalid later ZIP cannot cause avoidable partial deployment.
+7. On a running server, the original helper only sent `reload` and printed `DATAPACK_RELOAD=REQUESTED`. It did not wait for a completion response or verify the new pack in `/datapack list enabled`.
+8. The original test suite covered additive install, idempotence, conflict preflight, identity conflicts, incompatible format rejection, and bundle registration, but not reload/runtime readback or the stage cleanup ownership defect.
+9. The installer needs to preserve the distinction between a pack already present but disabled and a newly added pack that fails to become enabled. Never auto-enable an existing disabled pack to make a test appear green.
+
+## Follow-up implementation prepared on 2026-11-12
+
+A separate follow-up bundle was prepared from the recovered baseline. It contains:
+- revised `bin/hagonoy-datapacks.py` (registration-only messaging, no implicit prestart action, explicit plan/sync, stage failure cleanup, datapack-only `--plan` compatibility alias);
+- revised `bin/hagonoy-datapacks-remote.py` (validated manager-generated stage paths, no self-deletion of stage, whole-batch validation before writes, log-based reload completion check, enabled/available runtime readback);
+- expanded `tests/datapack-deploy-check.py` (whole-batch prevalidation and mocked running-runtime verification);
+- `apply-followup.py`, a fail-closed patcher that checks exact baseline SHA-256 values, removes automatic start/update integration from both host lifecycle scripts, changes the main command routing/help and inventory wording, then applies the changes atomically.
+
+The patcher:
+- does not modify `config/approved-datapacks.json`;
+- does not contact Ubuntu or Windows;
+- does not run `addons sync`;
+- aborts before writing if the three datapack source files do not match the reviewed baseline, so user-local code is not silently overwritten.
+
+The follow-up was tested against a synthetic repository fixture matching the known earlier integration anchors. Python compilation passed. The expanded datapack tests passed in temporary fixture worlds, including a mocked console/log flow confirming reload completion and `/datapack list enabled`. These are offline code tests only, not live-world validation.
+
+The bundle currently exists as a ChatGPT-generated artifact for the user to apply to the WSL checkout. It has not been committed into the user's local branch or the repository by this review. If the local source hashes differ, stop and reconcile rather than forcing the patch.
+
+## Remaining work
+
+1. Apply/reconcile the follow-up against the exact WSL checkout; preserve the user's actual approval manifest.
+2. Inspect the resulting `bin/hagonoy`, Ubuntu lifecycle, Windows lifecycle, and legacy inventory routing; verify no automatic datapack hooks remain.
+3. Run Python compilation, datapack fixture tests, shell syntax checks, and focused static checks on those hooks.
+4. Inspect the real 13-pack approval manifest and corresponding source ZIPs on the user's machine; confirm filenames, bytes, SHA-256 values, and 26.3 compatibility without changing or deploying anything.
+5. Run `addons plan` against the selected canonical host and review every `PRESENT`, `ADD`, and `CONFLICT`.
+6. Only after the user explicitly requests a deployment, run the standalone `addons sync` against the selected host. Verify on-disk hashes and, if running, reload completion and `/datapack list enabled`.
+7. After the datapack workflow is complete, resume the broader maintenance work and later review host switching/backup tools.
+
+## Continuity discipline
+
+Update this document when a user decision changes, when a code defect is verified/fixed, or when a test or live operation establishes new state. Label observations by source and date. Never store credentials, tokens, private keys, or other secrets. Never claim a live datapack was installed or enabled based on offline fixture tests.
