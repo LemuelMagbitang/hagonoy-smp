@@ -85,7 +85,7 @@ The detailed subsystem record is `memory/DATAPACK_WORKFLOW.md`. Read it alongsid
 Important current distinctions:
 - The 13 VanillaTweaks packs were recorded as registered in prior work; the exact manifest in the user's current WSL worktree was not directly inspected in this turn. Preserve it.
 - The earlier additive manager patch was recovered from Library material and inspected. Findings about it are not proof that the unshared local WSL worktree has identical file contents.
-- A reviewed follow-up bundle was prepared and offline-tested. It has not yet been applied to the user's WSL checkout, committed to the user's branch, or used against either live host.
+- The user applied the reviewed datapack follow-up to the WSL checkout on 2026-11-12. Python compilation, datapack fixture tests (including stage and running-runtime checks), and lifecycle shell syntax checks passed. The user's local branch name/head after application has not been freshly recorded here; the exact local diff has not been uploaded to GitHub. The work was not applied to either live server.
 - No datapack was deployed, enabled, removed, overwritten, or changed in a live world during this review.
 
 ## Conversation-history audit limitation
