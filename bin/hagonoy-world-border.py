@@ -35,7 +35,9 @@ TARGETS = {
     },
 }
 WIDTH_RE = re.compile(
-    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?)\s+blocks?\s+wide",
+    r"world border is currently\s+"
+    r"((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+    r"\s+block(?:s|\(s\))?\s+wide",
     re.IGNORECASE,
 )
 
@@ -121,22 +123,26 @@ def ubuntu_state(target: str, session: str, port: str) -> str:
 
 
 def console_send(host: str, target: str, session: str, command: str) -> None:
+    # send-keys requires a pane target, not only an exact session target.
+    pane_target = f"={session}:0.0"
     if host == "WINDOWS":
-        run(["tmux", "send-keys", "-t", f"={session}", command, "C-m"])
+        run(["tmux", "send-keys", "-t", pane_target, command, "C-m"])
     else:
         remote = (
-            "tmux send-keys -t " + shlex.quote("=" + session) + " "
+            "tmux send-keys -t " + shlex.quote(pane_target) + " "
             + shlex.quote(command) + " C-m"
         )
         run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, remote])
 
 
 def console_capture(host: str, target: str, session: str) -> str:
+    # capture-pane also requires an explicit pane target.
+    pane_target = f"={session}:0.0"
     if host == "WINDOWS":
-        return run(["tmux", "capture-pane", "-p", "-t", f"={session}", "-S", "-120"])
+        return run(["tmux", "capture-pane", "-p", "-t", pane_target, "-S", "-120"])
     return run([
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target,
-        "tmux", "capture-pane", "-p", "-t", f"={session}", "-S", "-120",
+        "tmux", "capture-pane", "-p", "-t", pane_target, "-S", "-120",
     ])
 
 

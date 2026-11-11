@@ -27,6 +27,10 @@ assert border["TARGETS"]["minecraft:the_end"]["diameter"] == 20000
 assert border["TARGETS"]["minecraft:the_end"]["change_diameter"] is False
 assert border["WIDTH_RE"].search("The world border is currently 10000 blocks wide")
 assert border["WIDTH_RE"].search("The world border is currently 10000 block wide")
+assert border["WIDTH_RE"].search("The world border is currently 10000 block(s) wide").group(1) == "10000"
+assert border["WIDTH_RE"].search("The world border is currently 10000.0 blocks wide").group(1) == "10000.0"
+assert border["WIDTH_RE"].search("The world border is currently 1.25E+04 block(s) wide").group(1) == "1.25E+04"
+
 
 addons = load(ROOT / "bin" / "hagonoy-addons.py")
 assert addons["pack_key"]("painting picker v1.1.5 (MC 26.3).zip") == "painting picker"
@@ -126,7 +130,7 @@ with tempfile.TemporaryDirectory(prefix="hsmp-addon-test-") as tmp:
         compatible, reason = addons["pack_metadata"](archive)
         assert compatible is False and "nested below" in reason
 
-print("[OK] World-border targets and no-shrink policy constants")
+print("[OK] World-border targets, no-shrink policy, and console reply parsing")
 print("[OK] PaperMC stable-build size and SHA-256 verification")
 print("[OK] Chunky, Geyser and Floodgate publisher metadata verification")
 print("[OK] Version comparison and VanillaTweaks filename reconciliation")
