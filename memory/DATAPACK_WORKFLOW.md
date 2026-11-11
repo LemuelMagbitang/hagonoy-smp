@@ -175,6 +175,34 @@ The bundle currently exists as a ChatGPT-generated artifact for the user to appl
 
 Additional offline tests were added after the initial record: a newly installed pack that appears under `available` but not `enabled` now fails verification without auto-enabling it; an already-present disabled pack is reported as `AVAILABLE_NOT_ENABLED` and preserved. The expanded test suite passed again on 2026-11-12.
 
+## User-applied follow-up and verification (2026-11-12)
+
+The user successfully extracted and ran `hsmp-datapack-followup/apply-followup.py` in the WSL checkout `~/hagonoy-smp`. The patcher reported all intended changes applied:
+- revised datapack manager, remote helper, and datapack tests;
+- main `hagonoy addons` routing now points to datapack-only commands;
+- automatic datapack hooks removed from Ubuntu and Windows lifecycle integration;
+- broad addon inventory wording corrected;
+- `config/approved-datapacks.json`, live worlds, server state, and backups unchanged.
+
+The user then ran:
+```bash
+python3 -m py_compile bin/hagonoy-datapacks.py bin/hagonoy-datapacks-remote.py tests/datapack-deploy-check.py
+python3 tests/datapack-deploy-check.py
+bash -n bin/hagonoy-dual-lifecycle bin/hagonoy-dual-windows-lifecycle
+```
+All commands completed successfully. Test output confirmed:
+- additive install, idempotence, conflicts, duplicate identities, uncompressed-identity conflict, and incompatible format rejection;
+- registration-only behavior and idempotent bundle registration;
+- whole-batch validation before world writes;
+- running-server reload completion and enabled-pack readback;
+- caller-owned stage cleanup and source-failure-before-stage creation;
+- newly installed but disabled packs are reported without auto-enabling;
+- already-present disabled packs remain untouched and are distinguished from enabled packs.
+
+These are offline fixture tests. The output's registration test used a synthetic two-pack bundle; it does **not** establish the user's real 13-pack manifest/source state or the live server's installed/enabled state. The follow-up patcher explicitly reported the real approval manifest and live worlds unchanged. No `addons sync` or live deployment has been run.
+
+Next safe sequence is to inspect the real manifest with `./hagonoy addons list`, then run the read-only `./hagonoy addons plan --host <actual-authoritative-host>`. Determine the actual host from live host/generation status; do not assume the historical Ubuntu runtime is still current. Review every `PRESENT`, `ADD`, and `CONFLICT` before any sync. `addons sync` remains a separate user-authorized mutation.
+
 ## Remaining work
 
 1. Apply/reconcile the follow-up against the exact WSL checkout; preserve the user's actual approval manifest.
