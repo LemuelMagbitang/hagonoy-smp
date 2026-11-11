@@ -135,3 +135,12 @@ Source: user supplied live Ubuntu SSH terminal output.
 - Exact cause of the long HelpYamlReader/YAML parse is not established; do not blame a particular plugin or YAML file without additional evidence.
 - Deployment objective achieved: all 13 approved custom datapacks are installed and enabled on Ubuntu. No evidence of Windows deployment; Windows remains outside this operation.
 - Follow-up engineering task: inspect local `bin/hagonoy-datapacks-remote.py` reload wait/confirmation logic and adjust it to tolerate genuinely slow resource reloads while retaining a bounded timeout, progress/status, and definitive post-reload `datapack list enabled` verification. Avoid interpreting a missing quick acknowledgement as failure if the reload is still processing. Test this using fixtures; do not cause another live reload just to test the helper.
+
+
+## Reload-confirmation fix prepared — 2026-11-12
+
+- After reviewing the exact local helper/test excerpts supplied by the user, a guarded patch bundle was prepared for `bin/hagonoy-datapacks-remote.py` and `tests/datapack-deploy-check.py`.
+- Intended behavior: accept Paper's `Reloading!` line as request acceptance, then treat the queued `datapack list enabled` response as the post-reload completion barrier; allow up to 360 seconds for that response and print periodic wait progress.
+- The test fixture is changed to simulate a delayed enabled-list response and verify that the helper waits and reports progress.
+- The bundle was only prepared and its patch anchors were validated against reconstructed excerpts. It has not yet been applied to the user's WSL checkout or run against the full test file.
+- No live server command, reload, sync, backup, or world-file change was performed for this tooling fix.
