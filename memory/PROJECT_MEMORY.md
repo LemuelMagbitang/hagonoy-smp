@@ -2,62 +2,98 @@
 
 Last updated: 2026-11-12 (Asia/Manila)
 
-This file is the durable handoff for work on the HSMP server-management tools. Read it before making project changes and update it when decisions, implementation state, or blockers change. Keep it concise and factual; remove stale details rather than accumulating repeated notes.
+This is a continuity aid, not the project authority. The user's explicit decisions and clarifications are authoritative. Keep this file factual, compact, and current; never let an older note or legacy script override the user's direction.
 
-## Working rules
+## Mission and operating objective
 
-- Keep the work simple, fast, and focused. Continue from the latest known state; do not repeat broad audits or rediscovery.
-- The GitHub repository is the source of truth for committed project code. Do not treat an old remote branch as the user's latest local working tree.
-- User runs commands in their WSL/Ubuntu/Windows environment. Never claim to have edited their local checkout or live server unless a tool actually did so.
-- Make changes in this repository; reuse existing scripts and layout. Do not add directories or abstractions without a concrete need.
-- No automatic full backups. A full backup requires a separate, explicit user decision.
-- Do not add, remove, replace, retire, prune, or deploy plugins, datapacks, or other server content without explicit approval for that specific operation.
-- Keep maintenance output clear, with phase/progress/error reporting for long operations.
-- Do not stop or modify the live server during code-only work.
+- The project goal is a healthy, reliable HSMP server that returns to a working, verified state after maintenance. The server may be stopped briefly when an operation requires it; availability and correct recovery are the objective, not avoiding all downtime at the expense of maintenance.
+- The Minecraft server was successfully upgraded from its earlier 1.21.x-era baseline to Minecraft 26.3 / Paper 26.3. Treat that major-version upgrade as completed and do not reopen it unless the user reports a problem.
+- The update/maintenance manager is still being completed so future maintenance can be performed safely and reliably. Do not confuse successful migration to 26.3 with completion of the recurring update manager.
+- Keep work simple, focused, and exceptional. Continue from known state; no repeated broad audits, unnecessary abstractions, directory proliferation, or redundant questions.
+- The user's decisions are the source of truth. The repository is the implementation workspace and version-control record; legacy scripts are references only, not the authority.
+- Clearly distinguish user-confirmed facts, historical command output, and anything not yet verified. Never claim local WSL edits, remote edits, server changes, or runtime verification that did not actually occur.
 
-## Agreed workflow boundaries
+## Agreed maintenance responsibilities and order
 
-1. **Software updates** (./hagonoy update): update Paper and only already-installed, explicitly managed components such as Geyser and Floodgate. Inspect installed state; do not silently install missing components or alter unrelated plugins.
-2. **Datapacks**: independent workflow using the existing datapack/addons commands. Datapack registration/planning/sync must not be part of start or update. Datapack files live in the world's datapacks folder.
-3. **Server settings**: a separate logical workflow for server configuration (for example view distance, simulation distance, Paper and Geyser settings). No need to create a separate physical directory unless a real implementation need appears.
+### 1. Core server updater — current priority
 
-Never let a software update or server start unexpectedly change world datapacks.
+The normal server update workflow is limited to:
+- Paper server software.
+- Geyser.
+- Floodgate.
 
-## Current project state (known 2026-11-12)
+The updater must inspect what is actually installed and update only those managed components. Do not add missing components or update unrelated plugins such as Chunky unless the user explicitly changes scope.
 
-- User's WSL checkout: /home/lemuel/hagonoy-smp.
-- Last known local branch: fix/border-console-pane-and-parser-20261111. This branch was not present in the GitHub branch listing checked on 2026-11-12; do not assume its commits or worktree changes are on GitHub.
-- Remote branches seen: feature/dual-host-manager, main, maintenance/backup-path-and-metadata, maintenance/world-border-datapack-updater.
-- A current-worktree patch was exported by the user to C:\Users\lemue\Downloads\hsmp-current-worktree.patch; SHA-256: fa19c46f7b5b8d710bbb7c0cb66ae337d0de8b0a7a36ac40329a1ce859c05a25. The patch file itself still needs to be attached in the ChatGPT conversation before it can be inspected or used to prepare an exact change. Do not reconstruct the branch from stale remote code.
-- Previously committed locally (exact availability on current remote branch not confirmed):
-  - 67016c3 — Paper updates use a temporary rollback JAR rather than an automatic TAR backup.
-  - 7ca4d97 — world-border console targeting and reply parsing.
-- Datapack manager files were added locally by the user in an earlier step:
-  - bin/hagonoy-datapacks.py
-  - bin/hagonoy-datapacks-remote.py
-  - config/approved-datapacks.json
-  - tests/datapack-deploy-check.py
-  - Related modifications to bin/hagonoy, dual lifecycle scripts, and addons inventory.
-- The approved datapack manifest currently lists 13 VanillaTweaks packs. Registration was completed; deployment was not. Do not deploy them unless the user explicitly authorizes a separate datapack sync.
-- The datapack manager was wired into start and update; this coupling is unwanted and must be removed from those lifecycle paths while preserving standalone datapack commands.
-- Offline checks previously passed for shell syntax, Python compilation, tests/datapack-deploy-check.py, and git diff --check at that earlier point. Re-run only focused tests after relevant edits.
+The updater should discover current stable releases from their official upstream sources. Files in the Windows update-downloads folder are reference/staging material, not the only update source and not proof that a file is the latest release. Validate candidates and compatibility, stage safely, perform a graceful save/stop when needed, apply the update, restart, and verify startup/readiness and the resulting versions. On failure, recover/rollback safely and report the exact outcome. Do not leave the server stopped after a failed operation when a safe restart/recovery is possible.
 
-## Last known live-server state (do not assume still current)
+Routine updates must not silently make full TAR backups. A full backup is a separate operation and requires its own explicit authorization. Temporary rollback artifacts used by the updater are not a substitute for, or authorization to create, a full backup.
 
-- Ubuntu was the authoritative live host, remote server path /home/leonardodavinci/minecraft-server, generation 6, Minecraft 26.3, Paper 26.3-244-main@35a2d15, tmux session mcserver, port 25565 listening.
-- Windows server path: /mnt/d/Hagonoy-SMP/minecraft-server, generation 5, stopped.
-- Paper 249 was downloaded and SHA-verified in temporary staging but was not installed.
-- The failed update stopped at the generation-verifier stage, before server shutdown, save/stop, JAR replacement, or datapack deployment. Last observed live version remained Paper 244.
-- Treat all runtime details above as historical until the user provides a newer status. Do not re-audit the server unless the next concrete operation requires it.
+### 2. VanillaTweaks datapack maintenance — next distinct workflow
 
-## Next work
+Datapack maintenance is a separate script/workflow to address after the core Paper/Geyser/Floodgate updater. Do not couple datapack installation/sync to normal server start or the core software update command.
 
-1. Obtain and inspect the user's exported patch (SHA above) so edits target the exact current branch/worktree.
-2. Remove datapack sync hooks from start and update; preserve standalone datapack commands and registration.
-3. Run only the focused syntax and datapack/update regression checks affected by that change.
-4. Then finish the simple installed-component software updater (Paper plus installed/managed Geyser and Floodgate) without expanding scope into unrelated plugins or datapacks.
-5. Give the user one clear next command at a time, only when an action in their environment is actually needed.
+The user clarified that the built-in `vanilla`, `bukkit`, and `paper` entries shown by Minecraft's `/datapack list` are not independent downloadable update targets for the datapack updater. Paper is updated as server software. The custom world datapacks currently known are VanillaTweaks packs.
 
-## Session handoff protocol
+A local datapack manager and manifest were added; the manifest registered 13 VanillaTweaks packs for Minecraft 26.3. Registration/planning is not proof of deployment. Confirm actual installed state before any sync. Do not silently overwrite, remove, prune, or deploy packs. The separate datapack workflow should handle version compatibility and update/install decisions for the approved VanillaTweaks set.
 
-At the start of an HSMP continuation, read this file and the current ChatGPT project context. Prefer the newest dated facts when they conflict. After meaningful work, update this file with the new state, tests, commits, and the single next action. Do not store credentials, tokens, private keys, or other secrets here.
+### 3. Remaining host and backup utilities — review after the above
+
+Host switching/moving the authoritative server between Ubuntu and Windows, and backup utilities, are separate maintenance responsibilities. They are believed to be largely in place but the user wants to review them after the core updater and datapack workflow are complete. Legacy scripts can inform behavior but must not be adopted as the main implementation without checking them against the user's current requirements.
+
+## Known directory layout
+
+Use these as the current intended/canonical paths. The user's latest explicit path clarification overrides older folder-preparation scripts and earlier backup-folder names.
+
+**Windows (D: drive):**
+- Live server: `D:\\Hagonoy-SMP\\minecraft-server`
+- Backup vault: `D:\\Hagonoy-SMP\\server-backup`
+- Update downloads/reference staging: `D:\\Hagonoy-SMP\\server-update-downloads`
+- Legacy reference tree: `D:\\Hagonoy-SMP\\LINUX-HSMP - Emergency Evac`
+
+**Ubuntu host:**
+- Live server: `/home/leonardodavinci/minecraft-server`
+- Backup vault: `/home/leonardodavinci/server-backup`
+- Manager checkout previously observed: `/home/leonardodavinci/hagonoy-smp`
+
+**Development/control environment:**
+- User's WSL checkout: `/home/lemuel/hagonoy-smp`
+- Dual-host configuration: `config/dual-host.conf`
+
+The Windows server and Windows staging paths appear in WSL as `/mnt/d/Hagonoy-SMP/...`. Do not infer a separate native Windows manager checkout; the exact location of any such checkout has not been established. Do not use the older `hsmp-evac-v2-win-backup` directory as the canonical backup vault; the user has explicitly specified `server-backup` on both hosts.
+
+## Current known implementation state (2026-11-12)
+
+- WSL branch last reported: `fix/border-console-pane-and-parser-20261111`. This local branch was not present in the remote branch list checked on 2026-11-12. Do not replace it with stale remote code or assume its worktree is on GitHub.
+- User exported the current worktree diff to `C:\\Users\\lemue\\Downloads\\hsmp-current-worktree.patch`.
+  - SHA-256: `fa19c46f7b5b8d710bbb7c0cb66ae337d0de8b0a7a36ac40329a1ce859c05a25`
+  - The patch itself has not yet been attached in the active conversation, so the exact current local diff remains unavailable for direct editing.
+- Previously committed locally (exact presence on the current branch should be confirmed from the patch, not inferred):
+  - `67016c3` — Paper update uses a temporary rollback JAR rather than an automatic TAR backup.
+  - `7ca4d97` — world-border console targeting and reply parsing.
+- Datapack manager additions previously applied locally include:
+  - `bin/hagonoy-datapacks.py`
+  - `bin/hagonoy-datapacks-remote.py`
+  - `config/approved-datapacks.json`
+  - `tests/datapack-deploy-check.py`
+  - related routing/integration changes in the main and dual-host lifecycle scripts.
+- The datapack manager was integrated into `start` and `update`; that lifecycle coupling is not wanted and must be removed while retaining the standalone datapack commands.
+- Earlier focused offline checks passed for shell syntax, Python compilation, `tests/datapack-deploy-check.py`, and `git diff --check`; those results predate the latest exported worktree and must not be represented as a fresh test of the current tree.
+- Historical update attempt stopped at a generation/runtime verifier before server shutdown, save/stop, JAR replacement, or datapack deployment. Paper 26.3 build 244 was the last observed installed build; Paper 249 was downloaded and hash-verified in staging but was not installed in that attempt. This point-build history does not undo the successfully completed migration to Minecraft 26.3.
+- Historical runtime observation: Ubuntu was authoritative, generation 6, Minecraft 26.3, Paper 26.3-244, tmux `mcserver`, port 25565 listening; Windows generation 5 was stopped. Treat these as historical, not live status.
+
+## Immediate work sequence
+
+1. Obtain and inspect the user's exported worktree patch so all edits target the exact current code.
+2. Finish the core Paper/Geyser/Floodgate updater: upstream latest-release discovery, installed-component detection, safe update/rollback, start/readiness verification, and clear progress/errors.
+3. Remove all automatic datapack work from normal `start` and core `update`; keep standalone datapack maintenance independent.
+4. Build/finish the VanillaTweaks datapack update workflow as the next distinct maintenance feature.
+5. Validate both workflows with focused tests and then review host-switching/backup utilities.
+6. For any live maintenance, establish the current authoritative host and perform preflight, graceful shutdown only when required, then verify the server is healthy and running again. Do not assume or manufacture current runtime state.
+
+## Conversation-history audit limitation
+
+The user supplied two private ChatGPT conversation URLs marking the start and current end of a long, branched HSMP project history. Direct retrieval of those `/c/` URLs was blocked. The accessible Library contains supporting scripts, patches, and pasted terminal-output snapshots, some of which were read to confirm paths and implementation history; these are not a complete transcript of all 23+ conversation branches. Never claim the full history has been read until the user supplies an accessible conversation export/transcript. Preserve this gap explicitly rather than filling it with guesses.
+
+## Handoff protocol
+
+At each continuation, read this project memory together with the current conversation context. The user's newest explicit direction wins over stale notes. After substantial work, update this file with verified decisions, state, tests, commits, and the next concrete action. Never store credentials, tokens, private keys, or other secrets.
