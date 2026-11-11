@@ -374,3 +374,31 @@ unzip -o /mnt/c/Users/lemue/Downloads/hsmp-reload-confirmation-fix-v2.zip -d /mn
 python3 /mnt/c/Users/lemue/Downloads/hsmp-reload-confirmation-fix/apply-fix.py .
 ```
 Then run py_compile, the datapack fixture test, and `git diff --check`. This remains offline code maintenance only; do not rerun live sync/reload.
+
+
+## Slow-reload fix applied — 2026-11-12
+
+The user successfully extracted and applied `hsmp-reload-confirmation-fix-v2` to the WSL working tree.
+
+Recorded resulting file hashes:
+- `bin/hagonoy-datapacks-remote.py`: `7220b8bb598f9ff648bd797a00ef7841a69647faa19b391ae808b1f621c75bc7`
+- `tests/datapack-deploy-check.py`: `53dc7dbdffc397b66ac1686059ac051a3fadb52ac8dafb6972d649cc556784ef`
+
+User ran:
+```bash
+python3 -m py_compile bin/hagonoy-datapacks-remote.py tests/datapack-deploy-check.py
+python3 tests/datapack-deploy-check.py
+git diff --check
+```
+All returned successfully. Test output confirms:
+- Additive installation/idempotency/conflict/identity/format tests pass.
+- Registration remains separate and synthetic registration fixture is idempotent.
+- Entire batch is validated before world writes.
+- New slow-reload fixture passes: `[OK] Slow reload is tolerated; queued enabled-list readback confirms the new pack and reports wait progress.`
+- Source-validation failure occurs before staging creation.
+- New-pack-disabled and already-present-disabled scenarios remain accurately distinguished, with no auto-enable behavior.
+- `git diff --check` emitted no errors or warnings.
+
+The patcher reported no Minecraft host contact, reload, sync, backup, or world-file operation. These are offline tests only.
+
+Next required review: inspect the exact local diff for `bin/hagonoy-datapacks-remote.py` and `tests/datapack-deploy-check.py` before accepting the patch as complete. Verify bounded timeout duration, polling/progress behavior, recognition of the reload-start response, ordering of the queued `datapack list enabled` command, and that success is only emitted when every newly installed approved name is confirmed enabled. Do not trigger a live reload merely to test the helper. Do not push local code to `main` via docs connector; local user checkout remains the implementation source.
