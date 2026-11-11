@@ -347,3 +347,16 @@ The manager treated a slow reload as an operation failure because the remote hel
 - Add fixture tests for slow acknowledgement, delayed command processing, reload failure, missing enabled packs, and complete success.
 - Do not trigger another reload on the live server merely to test the helper. The 13 packs are already successfully enabled.
 - Do not auto-reload or re-run sync as part of core server start/update. Datapack management remains a separate workflow.
+
+
+## Helper timeout correction prepared — 2026-11-12
+
+The exact local helper and test excerpts were supplied by the user. A guarded application bundle has been prepared (not yet applied to WSL):
+
+- Replace the reload completion wait for literal `reload complete` with recognition of `Reloading!` / `Reload complete` as request acceptance (30-second bounded acceptance wait).
+- Follow the request with `datapack list enabled`. Minecraft processes the queued console query after the reload operation; this response, not the initial acknowledgement, is the completion barrier.
+- Give the enabled-list query a 360-second maximum for slow resource reloads. Print periodic `[WAIT]` messages with elapsed and maximum time.
+- Preserve final per-pack enabled verification; only report `DATAPACK_RELOAD=CONFIRMED` after all newly installed packs are confirmed enabled.
+- Extend the main runtime fixture to simulate Paper's observed `Reloading!` response and delay the enabled-list response across multiple poll cycles. Assert progress output and successful final runtime verification.
+- Exact-anchor guard: the patcher checks each inspected source block occurs exactly once before writing either file. It does not contact Minecraft.
+- Application, full fixture test run, and review of the real WSL diff are still pending. Do not rerun sync or reload to test this tooling change; all 13 custom packs are already confirmed enabled in Ubuntu.
