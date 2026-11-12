@@ -1837,7 +1837,7 @@ def populate_core_artifact_cache(cache_directory, minecraft_version, components,
 def update_core_server(
     directory, session, port, ready_pattern,
     start_timeout, stop_timeout, user_agent, mode, host="ubuntu",
-    artifact_cache=None, bedrock_port=19132
+    artifact_cache=None, bedrock_port=19132, expected_generation_id=None
 ):
     if mode not in ("plan", "execute"):
         fail("Core update mode must be plan or execute.")
@@ -1848,6 +1848,8 @@ def update_core_server(
     data = load(directory)
     if data is None or data["state"] != "running" or data.get("host") != host:
         fail(f"Core update requires a tracked RUNNING {host} generation.")
+    if expected_generation_id is not None and data.get("generation_id") != expected_generation_id:
+        fail("Active server generation changed since the coordinator preflight. Refusing to update.")
 
     runtime = verify_running_server(
         directory, host, "AUTO", "AUTO",
@@ -2818,6 +2820,7 @@ def main():
     s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
     s.add_argument("--artifact-cache")
     s.add_argument("--bedrock-port", type=int, default=19132)
+    s.add_argument("--expected-generation-id")
     core_mode = s.add_mutually_exclusive_group(required=True)
     core_mode.add_argument("--plan", dest="mode", action="store_const", const="plan")
     core_mode.add_argument("--execute", dest="mode", action="store_const", const="execute")
@@ -2891,7 +2894,7 @@ def main():
             args.directory, args.session, args.port,
             args.ready_pattern, args.start_timeout,
             args.stop_timeout, args.user_agent, args.mode, args.host,
-            args.artifact_cache, args.bedrock_port
+            args.artifact_cache, args.bedrock_port, args.expected_generation_id
         )
     elif args.action == "finish":
         finish(args.directory)
