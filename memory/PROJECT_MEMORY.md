@@ -317,3 +317,9 @@ User supplied the exact current WSL implementations of Paper/Geyser metadata dis
 - The extracted generation helper is 95,553 bytes (blob `a4e68ede5095f0b5f666b2ff47d017394cd7365f`), while root/main `bin/hagonoy-generation` is 49,351 bytes (different source revision); preserve the extracted source copy as the main working baseline and do not replace it from root/main.
 - Current minimum missing source needed to complete the exact source snapshot is the WSL `bin/hagonoy` dispatcher. User can place it at `server-files-copy/hsmp-updater-current-source/bin/hagonoy` in GitHub, or attach the exact 16-file archive when possible. Until then, no complete safe patch is constructed.
 - No source code was edited, no manager code was committed, no tests or fresh live status were run, and no Minecraft server process/JAR/plugin/world/datapack/backup changed during this repository inspection.
+
+## Source handoff convention — 2026-11-13
+
+- User designated repository folder `server-files-copy/` as the preferred place to upload project files requested for inspection or patch preparation. They may alternatively attach files in chat.
+- For future source/patch handoffs, prefer `server-files-copy/` in GitHub or a chat attachment; do not assume local WSL paths are directly accessible to the assistant.
+- User has just staged the exact current WSL `bin/hagonoy` dispatcher into `server-files-copy/hsmp-updater-current-source/bin/hagonoy` and displayed the staged diff. At the last reported point, the terminal was still in the Git diff pager; user was instructed to press `q` so the existing command chain can continue to commit and push. Commit/push completion is NOT yet confirmed.
