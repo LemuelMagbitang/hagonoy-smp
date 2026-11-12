@@ -200,3 +200,14 @@ The remaining dual-host scripts were inspected from the user's current WSL check
 Implementation consequence: add a dedicated fail-closed active-host preflight for update. Require complete, host-specific evidence and exactly one verified RUNNING host plus one verified STOPPED host; abort on any missing/conflicting/unreachable evidence. Bind the selected host, generation ID, server path, and cache/transfer destinations into the plan and transaction. Recheck identity/state immediately before stop and replacement. Keep the inactive host untouched.
 
 The existing nine regression tests remain green but do not exercise these missing requirements. No live action was taken in this inspection.
+
+
+## Manifest/runtime verifier review — 2026-11-13
+
+The user's WSL source excerpt confirms that load() already validates manifest schema v1, running/stopped state, positive generation number, non-empty generation ID, unique/valid ancestry, ancestry length, and the parent-generation link. The loader does not itself enforce that manifest host matches the machine. Keep this single schema validator and add host-specific authorization checks around it.
+
+The generic Ubuntu verify_running_server() is already comparatively strong: it requires the configured tmux session, checks all pane working directories resolve to the canonical server directory, identifies exactly one PID owning the Java TCP listener, verifies its executable is Java and its /proc/<pid>/cwd equals the canonical server directory, and obtains Paper/Minecraft runtime versions from log or live console. Existing managed update preflight must validate the present manifest; the default require_manifest_absent=True is specifically an adoption safeguard and cannot be blindly used for an existing managed generation.
+
+The Windows-specific verifier previously supplied in this conversation checks unique Java TCP owner, Java executable and server.jar command line, Bedrock UDP presence, tmux session/pane path, and runtime versions. It does not independently inspect the Java process working directory. The stopped-state verifier checks both listener protocols on Windows but currently only TCP on Ubuntu. Close these gaps before treating Windows/Ubuntu evidence as equivalent.
+
+The active-host detector must require manifest host/state/generation identity to agree with live process/listener evidence, verify Java TCP and Bedrock UDP on both hosts, prove the canonical process directory (including Windows), and require exactly one fully verified RUNNING host and one fully verified STOPPED host. Recheck before stop and replacement. Do not use stopped-generation select() as a live-host selector.
