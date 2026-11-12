@@ -61,3 +61,16 @@ This is the chronological working record of substantive HSMP project conversatio
 3. Implement/test dual-host active-server detection using manifest identity/state, tmux, Java TCP, Bedrock UDP, process/canonical directory, and reachability. Exactly one valid active host must be confirmed; both, neither, unknown, unreachable, or conflicting evidence must fail closed.
 4. Integrate `/mnt/d/Hagonoy-SMP/server-update-downloads` into the artifact download/cache/transfer/deployment flow.
 5. Only after these gates pass, request/receive explicit live-update authorization, execute the update on the detected active host, and verify a healthy runtime.
+
+
+### GitHub memory library maintenance — 2026-11-13
+
+The following memory-only documentation changes were written to the repository's `main` branch in response to the user's standing instruction to maintain project memory across substantive HSMP chats:
+
+- Created `memory/README.md` as the memory-library index and authority/maintenance guide (commit `1b6b264d75b15e447433732dae48541b2d5baaa3`).
+- Created `memory/CORE_UPDATER_WORKFLOW.md` with managed scope, D: artifact cache, host-detection requirements, push/pull semantics, failure state, and next verification gates (commit `b7a2fb6b56290f5d742a338992bc748c1dd161d3`).
+- Created `memory/PROJECT_JOURNAL.md` as this chronological record (initial commit `db79e9176b2357e26b3a1ca1618b49c06b10c82c`).
+- Updated `memory/PROJECT_MEMORY.md` to correct the pre-migration version from 1.21.x to 26.1; supersede stale active-focus notes; record the active updater status, failed Geyser download, applied local patch, central cache, host-routing requirement, and current next steps (commits `a9ae10639002d763b68828b6d68141a301069387` and `54ebd789b012f7cb9551eb10ea242afb87d64803`).
+- Updated `memory/DATAPACK_WORKFLOW.md` to mark datapack work as a separate, currently deferred workstream while preserving its confirmed deployment history (commit `50f5efea6272e7e3036b136f1b108cc27268a73e`).
+
+These commits changed memory/documentation only. They did not push the user's local WSL source patch, alter either live server, deploy any artifact, change a datapack, or create a backup.
