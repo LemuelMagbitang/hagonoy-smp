@@ -1,0 +1,1096 @@
+#!/usr/bin/env bash
+# Hagonoy SMP Manager - safe, single-host Minecraft server controls.
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_FILE="${HAGONOY_CONFIG:-$PROJECT_DIR/config/manager.conf}"
+
+# Defaults; config/manager.conf overrides these.
+MC_DIR="$HOME/minecraft-server"
+TMUX_SESSION="mcserver"
+START_COMMAND="./start.sh"
+MINECRAFT_PORT="25565"
+SERVER_LOG="logs/latest.log"
+READY_PATTERN="Done"
+START_TIMEOUT_SECONDS="900"
+STOP_TIMEOUT_SECONDS="180"
+BACKUP_DIR="$HOME/minecraft-backups"
+BACKUP_RETENTION="7" # Deprecated compatibility setting; no automatic deletion.
+PLAYIT_AUTO_START="false"
+PLAYIT_COMMAND="playit"
+PLAYIT_SESSION="playit-tunnel"
+PLAYIT_STOP_WITH_SERVER="false"
+PAPER_JAR="server.jar"
+PAPER_PREVIOUS_JAR_RETENTION="3" # Deprecated compatibility setting; no automatic deletion.
+PAPER_USER_AGENT="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
+PAPER_STAGED_JAR=""
+PAPER_UPDATE_ROLLBACK_DIR=""
+PAPER_UPDATE_ROLLBACK_JAR=""
+PAPER_UPDATE_SERVER_STOPPED=false
+PAPER_UPDATE_NEW_JAR_INSTALLED=false
+PAPER_UPDATE_KEEP_ROLLBACK=false
+
+log() { printf '[hagonoy] %s\n' "$*"; }
+warn() { printf '[hagonoy] WARNING: %s\n' "$*" >&2; }
+die() { printf '[hagonoy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command '$1' is missing. Run ./install.sh or install it with apt."
+}
+
+validate_config() {
+    [[ -n "$MC_DIR" ]] || die "MC_DIR is empty in $CONFIG_FILE"
+    [[ -n "$TMUX_SESSION" ]] || die "TMUX_SESSION is empty in $CONFIG_FILE"
+    [[ "$MINECRAFT_PORT" =~ ^[0-9]{1,5}$ ]] && (( MINECRAFT_PORT >= 1 && MINECRAFT_PORT <= 65535 )) || die "MINECRAFT_PORT must be between 1 and 65535."
+    [[ "$START_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( START_TIMEOUT_SECONDS > 0 )) || die "START_TIMEOUT_SECONDS must be a positive integer."
+    [[ "$STOP_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( STOP_TIMEOUT_SECONDS > 0 )) || die "STOP_TIMEOUT_SECONDS must be a positive integer."
+    [[ "$BACKUP_RETENTION" =~ ^[0-9]+$ ]] || die "BACKUP_RETENTION must be zero or a positive integer."
+    [[ "$PLAYIT_AUTO_START" == "true" || "$PLAYIT_AUTO_START" == "false" ]] || die "PLAYIT_AUTO_START must be true or false."
+    [[ "$PLAYIT_STOP_WITH_SERVER" == "true" || "$PLAYIT_STOP_WITH_SERVER" == "false" ]] || die "PLAYIT_STOP_WITH_SERVER must be true or false."
+    [[ "$PAPER_JAR" =~ ^[a-zA-Z0-9._-]+\.jar$ ]] || die "PAPER_JAR must be a simple .jar filename without directory components."
+    [[ "$PAPER_PREVIOUS_JAR_RETENTION" =~ ^[0-9]+$ ]] && (( PAPER_PREVIOUS_JAR_RETENTION >= 1 )) || die "PAPER_PREVIOUS_JAR_RETENTION must be a positive integer."
+    [[ "$TMUX_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "TMUX_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
+    [[ "$PLAYIT_SESSION" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "PLAYIT_SESSION may contain only letters, numbers, dot, underscore, and hyphen."
+}
+
+has_tmux_session() {
+    tmux has-session -t "$1" 2>/dev/null
+}
+
+playit_system_service_active() {
+    command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet playit.service 2>/dev/null
+}
+
+playit_process_active() {
+    command -v pgrep >/dev/null 2>&1 && {
+        pgrep -x playitd >/dev/null 2>&1 || pgrep -x playit >/dev/null 2>&1
+    }
+}
+
+port_is_open() {
+    ss -ltnH "sport = :$MINECRAFT_PORT" 2>/dev/null | grep -q .
+}
+
+shell_quote() {
+    # Print one shell-safe representation suitable as a single argument.
+    printf '%q' "$1"
+}
+
+start_playit() {
+    # Manual playit-start is always allowed. The config flag controls only
+    # whether Playit is launched automatically after a managed Minecraft start.
+    local trigger="${1:-manual}"
+    if [[ "$trigger" == "auto" && "$PLAYIT_AUTO_START" != "true" ]]; then
+        log "Playit auto-start is disabled in config; skipping automatic start."
+        return 0
+    fi
+    [[ "$trigger" == "auto" || "$trigger" == "manual" ]] || die "Internal error: unknown Playit start mode '$trigger'."
+
+    if has_tmux_session "$PLAYIT_SESSION"; then
+        log "Playit session '$PLAYIT_SESSION' is already running."
+        return 0
+    fi
+    if playit_system_service_active; then
+        log "Playit is already running as the systemd service 'playit.service'; not starting a duplicate agent."
+        return 0
+    fi
+    if playit_process_active; then
+        log "A Playit agent process is already running outside Hagonoy; not starting a duplicate agent."
+        return 0
+    fi
+    local quoted
+    quoted="$(shell_quote "$PLAYIT_COMMAND")"
+    log "Starting Playit in tmux session '$PLAYIT_SESSION'..."
+    tmux new-session -d -s "$PLAYIT_SESSION" -c "$HOME" "bash -lc $quoted"
+}
+
+stop_playit() {
+    if ! has_tmux_session "$PLAYIT_SESSION"; then
+        if playit_system_service_active; then
+            warn "Playit is managed by systemd (playit.service), not Hagonoy's tmux session. This command did not stop it; use 'sudo systemctl stop playit' only when you intentionally want the agent offline."
+            return 1
+        fi
+        if playit_process_active; then
+            warn "A Playit process is running outside Hagonoy's tmux session. This command did not stop it; inspect its service or process manager."
+            return 1
+        fi
+        log "Playit session '$PLAYIT_SESSION' is not running."
+        return 0
+    fi
+    log "Requesting Playit agent shutdown (Ctrl+C)..."
+    tmux send-keys -t "$PLAYIT_SESSION" C-c
+    local i
+    for ((i=0; i<20; i++)); do
+        has_tmux_session "$PLAYIT_SESSION" || { log "Playit stopped."; return 0; }
+        sleep 1
+    done
+    warn "Playit session is still present. Inspect it with: tmux attach -t $PLAYIT_SESSION"
+    return 1
+}
+
+start_server() {
+    require_command tmux
+    require_command ss
+    [[ -d "$MC_DIR" ]] || die "Minecraft directory does not exist: $MC_DIR"
+
+    if has_tmux_session "$TMUX_SESSION"; then
+        log "Minecraft tmux session '$TMUX_SESSION' already exists."
+        return 0
+    fi
+    if port_is_open; then
+        die "Port $MINECRAFT_PORT is already listening but tmux session '$TMUX_SESSION' is absent. Refusing to start a second server. Investigate the process first."
+    fi
+
+    if [[ "$START_COMMAND" == ./* ]]; then
+        [[ -f "$MC_DIR/${START_COMMAND#./}" ]] || die "START_COMMAND target not found: $MC_DIR/${START_COMMAND#./}"
+        [[ -x "$MC_DIR/${START_COMMAND#./}" ]] || die "START_COMMAND is not executable: $MC_DIR/${START_COMMAND#./} (run chmod +x on it or set START_COMMAND=\"bash ./start.sh\")."
+    fi
+
+    local log_path="$MC_DIR/$SERVER_LOG"
+    local previous_size=0
+    [[ -f "$log_path" ]] && previous_size="$(wc -c < "$log_path")"
+
+    local quoted
+    quoted="$(shell_quote "$START_COMMAND")"
+    log "Starting Minecraft in '$MC_DIR' (tmux: $TMUX_SESSION)..."
+    tmux new-session -d -s "$TMUX_SESSION" -c "$MC_DIR" "bash -lc $quoted"
+
+    log "Waiting up to ${START_TIMEOUT_SECONDS}s for readiness pattern: '$READY_PATTERN'"
+    local elapsed=0 ready=false
+    while (( elapsed < START_TIMEOUT_SECONDS )); do
+        if ! has_tmux_session "$TMUX_SESSION"; then
+            die "Minecraft process/session exited before readiness. Inspect $log_path and tmux history if available."
+        fi
+        if [[ -f "$log_path" ]]; then
+            local current_size
+            current_size="$(wc -c < "$log_path")"
+            if (( current_size >= previous_size )); then
+                if tail -c +$((previous_size + 1)) "$log_path" 2>/dev/null | grep -Fq -- "$READY_PATTERN"; then
+                    ready=true
+                    break
+                fi
+            else
+                # The server rotated/recreated latest.log during startup.
+                if grep -Fq -- "$READY_PATTERN" "$log_path"; then
+                    ready=true
+                    break
+                fi
+            fi
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    if [[ "$ready" != true ]]; then
+        warn "Readiness was not confirmed before timeout. The server may still be loading. Do NOT start another copy."
+        warn "Inspect with: ./hagonoy status   and   ./hagonoy attach"
+        return 1
+    fi
+
+    log "Minecraft reported ready."
+    if [[ "$PLAYIT_AUTO_START" == "true" ]]; then
+        start_playit auto || warn "Minecraft is running, but Playit did not start successfully."
+    fi
+}
+
+stop_server() {
+    require_command tmux
+    require_command ss
+
+    if ! has_tmux_session "$TMUX_SESSION"; then
+        if port_is_open; then
+            die "Port $MINECRAFT_PORT is open but tmux session '$TMUX_SESSION' is absent. Refusing to stop an unidentified process automatically."
+        fi
+        log "Minecraft is already stopped."
+        if [[ "$PLAYIT_STOP_WITH_SERVER" == "true" ]]; then stop_playit || true; fi
+        return 0
+    fi
+
+    log "Sending save-all flush to Minecraft..."
+    tmux send-keys -t "$TMUX_SESSION" "save-all flush" C-m
+    sleep 2
+    log "Sending graceful stop command..."
+    tmux send-keys -t "$TMUX_SESSION" "stop" C-m
+
+    local elapsed=0
+    while (( elapsed < STOP_TIMEOUT_SECONDS )); do
+        if ! has_tmux_session "$TMUX_SESSION"; then
+            if ! port_is_open; then
+                log "Minecraft stopped cleanly; listening port is closed."
+                if [[ "$PLAYIT_STOP_WITH_SERVER" == "true" ]]; then stop_playit || warn "Playit did not stop cleanly."; fi
+                return 0
+            fi
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    die "Timed out waiting for a clean shutdown. I did not kill tmux or Java. Inspect the console: ./hagonoy attach"
+}
+
+paper_update_exit_cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+
+    if [[ -n "$PAPER_STAGED_JAR" && -f "$PAPER_STAGED_JAR" ]]; then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+    fi
+
+    if [[ "$PAPER_UPDATE_SERVER_STOPPED" == true ]]; then
+        if has_tmux_session "$TMUX_SESSION" || port_is_open; then
+            PAPER_UPDATE_KEEP_ROLLBACK=true
+            warn "Paper update was interrupted while Minecraft may still be active. Cleanup did not replace a JAR. Recovery copy: ${PAPER_UPDATE_ROLLBACK_JAR:-not created}"
+        else
+            if [[ "$PAPER_UPDATE_NEW_JAR_INSTALLED" == true ]]; then
+                local restore_stage=""
+                restore_stage="$(mktemp --tmpdir="$MC_DIR" ".hagonoy-paper-recovery.XXXXXX")" || restore_stage=""
+                if [[ -n "$restore_stage" ]] &&
+                   cp -p -- "$PAPER_UPDATE_ROLLBACK_JAR" "$restore_stage" &&
+                   mv -f -- "$restore_stage" "$MC_DIR/$PAPER_JAR"; then
+                    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+                    PAPER_UPDATE_KEEP_ROLLBACK=false
+                    log "Interrupted Paper update: previous JAR restored."
+                else
+                    [[ -z "$restore_stage" ]] || rm -f -- "$restore_stage"
+                    PAPER_UPDATE_KEEP_ROLLBACK=true
+                    warn "Interrupted Paper update: automatic JAR restoration failed. Recovery copy: ${PAPER_UPDATE_ROLLBACK_JAR:-not available}"
+                fi
+            fi
+
+            if [[ "$PAPER_UPDATE_NEW_JAR_INSTALLED" == false ]]; then
+                ( start_server ) || warn "Interrupted Paper update: Minecraft did not restart automatically. Inspect before proceeding."
+                PAPER_UPDATE_SERVER_STOPPED=false
+            fi
+        fi
+    fi
+
+    if [[ "$PAPER_UPDATE_KEEP_ROLLBACK" != true &&
+          -n "$PAPER_UPDATE_ROLLBACK_DIR" &&
+          -d "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+        if ! rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+            warn "Temporary Paper rollback directory could not be removed: $PAPER_UPDATE_ROLLBACK_DIR"
+        fi
+    fi
+    exit "$exit_code"
+}
+
+BACKUP_RESTART_REQUIRED=false
+
+backup_exit_cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+    if [[ "$BACKUP_RESTART_REQUIRED" == true ]]; then
+        BACKUP_RESTART_REQUIRED=false
+        log "Restoring the server's previous running state after backup exit/interruption..."
+        start_server || warn "Automatic restart failed. Inspect the server and start it manually if appropriate."
+    fi
+    if [[ -n "$PAPER_STAGED_JAR" && -f "$PAPER_STAGED_JAR" ]]; then
+        rm -f -- "$PAPER_STAGED_JAR"
+    fi
+    exit "$exit_code"
+}
+
+backup_server() {
+    local keep_stopped=false
+    if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--keep-stopped" ) ]]; then
+        die "Usage: ./hagonoy backup [--keep-stopped]"
+    fi
+    [[ "${1:-}" == "--keep-stopped" ]] && keep_stopped=true
+
+    require_command tmux
+    require_command ss
+    require_command tar
+    require_command df
+    require_command realpath
+    [[ -d "$MC_DIR" ]] || die "Minecraft directory does not exist: $MC_DIR"
+
+    local was_running=false
+    if has_tmux_session "$TMUX_SESSION"; then
+        was_running=true
+    elif port_is_open; then
+        die "Port $MINECRAFT_PORT is open but the managed tmux session is absent. Refusing to back up a possibly active world."
+    fi
+
+    if [[ "$was_running" == true ]]; then
+        log "Backup requires a consistent save. The manager will gracefully stop Minecraft first."
+        stop_server
+        BACKUP_RESTART_REQUIRED=true
+        trap backup_exit_cleanup EXIT INT TERM
+    fi
+
+    local mc_real backup_real
+    mc_real="$(realpath -m -- "$MC_DIR")"
+    backup_real="$(realpath -m -- "$BACKUP_DIR")"
+    case "$backup_real/" in
+        "$mc_real/"*) die "BACKUP_DIR must be outside MC_DIR to prevent the archive from including itself. Choose another disk or directory." ;;
+    esac
+
+    mkdir -p -- "$BACKUP_DIR"
+    local timestamp archive temporary
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    archive="$BACKUP_DIR/hagonoy-smp-$timestamp.tar"
+    temporary="$archive.part"
+    [[ ! -e "$archive" && ! -e "$temporary" ]] || die "A backup with this timestamp already exists; wait a second and retry."
+
+    local source_bytes available_kib available_bytes required_bytes
+    source_bytes="$(du -sb -- "$MC_DIR" | awk '{print $1}')"
+    available_kib="$(df -Pk -- "$BACKUP_DIR" | awk 'NR == 2 { print $4 }')"
+    [[ "$available_kib" =~ ^[0-9]+$ ]] || die "Could not determine free space for backup directory: $BACKUP_DIR"
+    available_bytes=$((available_kib * 1024))
+    required_bytes=$((source_bytes + 100 * 1024 * 1024))
+    if (( available_bytes < required_bytes )); then
+        die "Not enough free space in $BACKUP_DIR. Need approximately $((required_bytes / 1024 / 1024)) MiB free; currently $((available_bytes / 1024 / 1024)) MiB. Use a separate drive or free space."
+    fi
+
+    log "Creating uncompressed backup: $archive"
+    log "This can take a while on the laptop's HDD. Server logs and crash-reports are excluded; world, plugins, mods, and configuration are included."
+    if ! tar -cf "$temporary" -C "$MC_DIR" --exclude='./logs' --exclude='./crash-reports' .; then
+        rm -f -- "$temporary"
+        die "Backup creation failed. Partial archive removed."
+    fi
+
+    log "Verifying backup archive structure before finalizing..."
+    if ! tar -tf "$temporary" >/dev/null; then
+        rm -f -- "$temporary"
+        die "Backup archive failed structural verification. Partial archive removed."
+    fi
+
+    mv -- "$temporary" "$archive"
+    log "Backup completed: $archive"
+
+    # Recovery archives are never deleted automatically.
+
+    if [[ "$was_running" == true ]]; then
+        BACKUP_RESTART_REQUIRED=false
+        trap - EXIT INT TERM
+        if [[ "$keep_stopped" == true ]]; then
+            log "Backup completed; Minecraft is intentionally left stopped for the maintenance operation."
+        else
+            log "Restarting Minecraft because it was running before the backup..."
+            start_server
+        fi
+    fi
+}
+
+path_is_same_or_child() {
+    local candidate="$1"
+    local parent="$2"
+    [[ "$candidate" == "$parent" || "$candidate" == "$parent/"* ]]
+}
+
+restore_server() {
+    [[ $# -eq 2 ]] || die "Usage: ./hagonoy restore <backup.tar> <new-destination-directory>"
+    require_command tmux
+    require_command ss
+    require_command tar
+    require_command realpath
+    require_command mktemp
+    require_command mv
+
+    local archive_input="$1"
+    local destination_input="$2"
+    [[ -f "$archive_input" ]] || die "Backup archive does not exist or is not a regular file: $archive_input"
+
+    local archive_real backup_real mc_real project_real
+    archive_real="$(realpath -e -- "$archive_input")" || die "Could not resolve backup archive path."
+    backup_real="$(realpath -e -- "$BACKUP_DIR")" || die "Configured backup directory does not exist: $BACKUP_DIR"
+    case "$archive_real" in
+        "$backup_real"/*) ;;
+        *) die "Restore only accepts Hagonoy backups stored inside BACKUP_DIR: $backup_real" ;;
+    esac
+    [[ "$(basename -- "$archive_real")" == hagonoy-smp-*.tar ]] || die "Archive name must match hagonoy-smp-*.tar."
+
+    if has_tmux_session "$TMUX_SESSION"; then
+        die "Minecraft tmux session '$TMUX_SESSION' is running. Stop Minecraft cleanly before restoring."
+    fi
+    if port_is_open; then
+        die "Port $MINECRAFT_PORT is listening. Refusing to restore while a Minecraft server may be active."
+    fi
+
+    log "Checking backup archive structure..."
+    tar -tf "$archive_real" >/dev/null || die "Backup archive is unreadable: $archive_real"
+
+    local entry normalized unsafe_entry=""
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        normalized="$entry"
+        while [[ "$normalized" == ./* ]]; do normalized="${normalized#./}"; done
+        [[ -z "$normalized" || "$normalized" == "." ]] && continue
+        if [[ "$normalized" == /* ]]; then
+            unsafe_entry="$entry"
+            break
+        fi
+        case "/$normalized/" in
+            */../*) unsafe_entry="$entry"; break ;;
+        esac
+    done < <(tar -tf "$archive_real")
+    [[ -z "$unsafe_entry" ]] || die "Archive contains an unsafe path entry: $unsafe_entry"
+
+    [[ -n "$destination_input" ]] || die "Restore destination cannot be empty."
+    [[ ! -e "$destination_input" && ! -L "$destination_input" ]] || die "Restore destination already exists; nothing was overwritten: $destination_input"
+    local destination_real destination_parent destination_name staging
+    destination_real="$(realpath -m -- "$destination_input")" || die "Could not resolve restore destination."
+    [[ "$destination_real" != "/" ]] || die "Refusing to use the filesystem root as a restore destination."
+    [[ ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination already exists; nothing was overwritten: $destination_real"
+
+    mc_real="$(realpath -m -- "$MC_DIR")"
+    project_real="$(realpath -m -- "$PROJECT_DIR")"
+    if path_is_same_or_child "$destination_real" "$mc_real"; then
+        die "Restore destination must be outside the live Minecraft directory: $mc_real"
+    fi
+    if path_is_same_or_child "$destination_real" "$project_real"; then
+        die "Restore destination must be outside the Hagonoy Git checkout: $project_real"
+    fi
+    if path_is_same_or_child "$destination_real" "$backup_real"; then
+        die "Restore destination must be outside BACKUP_DIR: $backup_real"
+    fi
+
+    destination_parent="$(dirname -- "$destination_real")"
+    destination_name="$(basename -- "$destination_real")"
+    mkdir -p -- "$destination_parent" || die "Could not create destination parent directory: $destination_parent"
+    destination_real="$(realpath -m -- "$destination_parent/$destination_name")"
+    [[ ! -e "$destination_input" && ! -L "$destination_input" && ! -e "$destination_real" && ! -L "$destination_real" ]] || die "Restore destination appeared or already exists; nothing was overwritten: $destination_input"
+
+    staging="$(mktemp -d --tmpdir="$destination_parent" ".${destination_name}.hagonoy-restore.XXXXXX")" || die "Could not create a temporary restore directory."
+    log "Extracting backup into temporary directory: $staging"
+    if ! tar -xf "$archive_real" -C "$staging" --no-same-owner; then
+        warn "Extraction failed. The partial files were left for inspection at: $staging"
+        return 1
+    fi
+
+    if [[ ! -f "$staging/server.properties" ]]; then
+        warn "The extracted archive has no top-level server.properties. It was not promoted to the requested destination."
+        warn "Inspect the extracted files at: $staging"
+        return 1
+    fi
+    if [[ "$START_COMMAND" == ./* ]]; then
+        local start_relative="${START_COMMAND#./}"
+        if [[ ! -f "$staging/$start_relative" || ! -x "$staging/$start_relative" ]]; then
+            warn "The configured startup file is missing or not executable in the restored copy: $START_COMMAND"
+            warn "Inspect the extracted files at: $staging"
+            return 1
+        fi
+    fi
+
+    if ! mv -Tn -- "$staging" "$destination_real"; then
+        warn "Could not move the verified restore into place. Temporary files remain at: $staging"
+        return 1
+    fi
+    if [[ -e "$staging" ]]; then
+        warn "The destination appeared during restore. No overwrite was performed; temporary files remain at: $staging"
+        return 1
+    fi
+
+    log "Restore completed: $destination_real"
+    log "Minecraft was not started. Inspect the restored copy before using it."
+}
+
+paper_read_installed() {
+    local log_path="$MC_DIR/$SERVER_LOG"
+    local paper_line
+    [[ -r "$log_path" ]] || { warn "Paper log not readable: $log_path"; return 1; }
+
+    paper_line="$(grep -F "This server is running Paper version " "$log_path" | tail -n 1 || true)"
+    [[ -n "$paper_line" ]] || {
+        warn "Could not find Paper's version line in $log_path. Start Paper and allow it to finish loading before checking updates."
+        return 1
+    }
+
+    PAPER_CURRENT_VERSION="$(sed -nE 's/.*This server is running Paper version ([0-9]+(\.[0-9]+)+)-[0-9]+-.*/\1/p' <<< "$paper_line")"
+    PAPER_CURRENT_BUILD="$(sed -nE 's/.*Implementing API version [0-9]+(\.[0-9]+)*\.build\.([0-9]+)-stable.*/\2/p' <<< "$paper_line")"
+
+    # Fallback for Paper log lines that expose the build in the Paper version token.
+    if [[ -z "$PAPER_CURRENT_BUILD" ]]; then
+        PAPER_CURRENT_BUILD="$(sed -nE 's/.*This server is running Paper version [0-9]+(\.[0-9]+)+-([0-9]+)-.*/\2/p' <<< "$paper_line")"
+    fi
+
+    [[ "$PAPER_CURRENT_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]] || {
+        warn "Could not safely parse the Minecraft version from Paper's startup line."
+        return 1
+    }
+    [[ "$PAPER_CURRENT_BUILD" =~ ^[0-9]+$ ]] || {
+        warn "Could not safely parse the Paper stable build number from Paper's startup line."
+        return 1
+    }
+}
+
+paper_load_stable_candidate() {
+    require_command curl
+    require_command jq
+    require_command sha256sum
+    require_command stat
+    require_command python3
+
+    paper_read_installed || return 1
+    log "Checking Paper stable builds for Minecraft $PAPER_CURRENT_VERSION (same Minecraft version only)..."
+
+    local response candidate api_url
+    api_url="https://fill.papermc.io/v3/projects/paper/versions/$PAPER_CURRENT_VERSION/builds"
+    if ! response="$(curl --fail --silent --show-error --location \
+        --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+        --header "User-Agent: $PAPER_USER_AGENT" "$api_url")"; then
+        warn "PaperMC Fill API request failed. No server files were changed."
+        return 1
+    fi
+
+    if ! candidate="$(jq -cer '[.[] | select(.channel == "STABLE")] | first // empty' <<< "$response")"; then
+        warn "PaperMC returned no stable build for Minecraft $PAPER_CURRENT_VERSION. No update is available through the stable channel."
+        return 1
+    fi
+
+    PAPER_LATEST_BUILD="$(jq -er '.id | select(type == "number" and . > 0)' <<< "$candidate")" || {
+        warn "PaperMC response did not contain a valid build number."
+        return 1
+    }
+    PAPER_DOWNLOAD_NAME="$(jq -er '.downloads["server:default"].name | select(type == "string" and length > 0)' <<< "$candidate")" || {
+        warn "PaperMC response did not contain a valid server JAR name."
+        return 1
+    }
+    PAPER_DOWNLOAD_URL="$(jq -er '.downloads["server:default"].url | select(type == "string" and startswith("https://fill-data.papermc.io/"))' <<< "$candidate")" || {
+        warn "PaperMC response did not contain a valid official Fill download URL."
+        return 1
+    }
+    PAPER_SHA256="$(jq -er '.downloads["server:default"].checksums.sha256 | select(type == "string" and test("^[a-fA-F0-9]{64}$"))' <<< "$candidate")" || {
+        warn "PaperMC response did not contain a valid SHA-256 checksum."
+        return 1
+    }
+    PAPER_DOWNLOAD_SIZE="$(jq -er '.downloads["server:default"].size | select(type == "number" and . > 0)' <<< "$candidate")" || {
+        warn "PaperMC response did not contain a valid download size."
+        return 1
+    }
+
+    [[ "$PAPER_DOWNLOAD_NAME" == paper-"$PAPER_CURRENT_VERSION"-"$PAPER_LATEST_BUILD".jar ]] || {
+        warn "PaperMC returned an unexpected JAR filename: $PAPER_DOWNLOAD_NAME"
+        return 1
+    }
+}
+
+paper_check() {
+    paper_load_stable_candidate || return 1
+    printf '\nPaper update check\n'
+    printf '%-28s %s\n' 'Minecraft version:' "$PAPER_CURRENT_VERSION"
+    printf '%-28s %s\n' 'Installed Paper build:' "$PAPER_CURRENT_BUILD"
+    printf '%-28s %s\n' 'Latest stable Paper build:' "$PAPER_LATEST_BUILD"
+    printf '%-28s %s\n' 'Download:' "$PAPER_DOWNLOAD_NAME"
+    printf '%-28s %s MiB\n' 'Download size:' "$(( (PAPER_DOWNLOAD_SIZE + 1048575) / 1048576 ))"
+
+    if (( PAPER_LATEST_BUILD > PAPER_CURRENT_BUILD )); then
+        log "A newer stable Paper build is available for Minecraft $PAPER_CURRENT_VERSION."
+        log "Use './hagonoy paper-update' when you are ready. No files were changed."
+    elif (( PAPER_LATEST_BUILD == PAPER_CURRENT_BUILD )); then
+        log "Paper is already on the latest stable build for Minecraft $PAPER_CURRENT_VERSION."
+    else
+        warn "Installed build $PAPER_CURRENT_BUILD is newer than the latest stable build returned by PaperMC ($PAPER_LATEST_BUILD). No downgrade will be offered."
+    fi
+}
+
+paper_update() {
+    paper_load_stable_candidate || return 1
+
+    if (( PAPER_LATEST_BUILD <= PAPER_CURRENT_BUILD )); then
+        if (( PAPER_LATEST_BUILD == PAPER_CURRENT_BUILD )); then
+            log "Paper is already on the latest stable build for Minecraft $PAPER_CURRENT_VERSION. Nothing to update."
+            return 0
+        fi
+        die "Installed Paper build is newer than the latest stable build returned by PaperMC. Refusing to downgrade."
+    fi
+
+    require_command tmux
+    require_command ss
+    require_command realpath
+    require_command mktemp
+    require_command cp
+    require_command mv
+    require_command grep
+
+    [[ -d "$MC_DIR" ]] || die "Minecraft directory does not exist: $MC_DIR"
+    [[ -f "$MC_DIR/$PAPER_JAR" && ! -L "$MC_DIR/$PAPER_JAR" ]] || die "Configured Paper JAR must exist as a regular, non-symlink file: $MC_DIR/$PAPER_JAR"
+    [[ "$START_COMMAND" == ./* ]] || die "Paper updater requires START_COMMAND to be a relative script such as ./start.sh."
+    local start_script="$MC_DIR/${START_COMMAND#./}"
+    [[ -f "$start_script" ]] || die "Configured startup script does not exist: $start_script"
+    grep -Fq -- "$PAPER_JAR" "$start_script" || die "The configured startup script does not reference PAPER_JAR='$PAPER_JAR'. Refusing to replace a JAR that may not be used."
+
+    has_tmux_session "$TMUX_SESSION" || die "Paper update requires the managed Minecraft tmux session to be running."
+    port_is_open || die "Minecraft tmux session exists but port $MINECRAFT_PORT is not listening. Resolve server health before updating."
+
+    printf '\nPaper update proposal\n'
+    printf '  Minecraft version: %s (will not change)\n' "$PAPER_CURRENT_VERSION"
+    printf '  Current Paper build: %s\n' "$PAPER_CURRENT_BUILD"
+    printf '  New stable Paper build: %s\n' "$PAPER_LATEST_BUILD"
+    printf '  JAR target: %s\n' "$MC_DIR/$PAPER_JAR"
+    printf '  Download: %s (%s MiB)\n' "$PAPER_DOWNLOAD_NAME" "$(( (PAPER_DOWNLOAD_SIZE + 1048575) / 1048576 ))"
+    printf '  No world TAR backup or plugin/config/datapack changes will be made.\n'
+    printf '  The previous JAR will be held temporarily outside the server directory for rollback.\n'
+    printf '  Temporary rollback data is removed after a confirmed update or rollback.\n'
+
+    local answer
+    if ! read -r -p "Proceed with this Paper update? [y/N] " answer; then
+        die "Interactive confirmation is required. No files were changed."
+    fi
+    [[ "$answer" =~ ^[Yy]$ ]] || { log "Update cancelled. No files were changed."; return 0; }
+
+    local mc_parent previous_jar downloaded_size downloaded_sha
+    local target_version="$PAPER_CURRENT_VERSION"
+    local old_build="$PAPER_CURRENT_BUILD"
+    local target_build="$PAPER_LATEST_BUILD"
+    mc_parent="$(dirname -- "$(realpath -e -- "$MC_DIR")")"
+    PAPER_STAGED_JAR="$(mktemp --tmpdir="$mc_parent" ".hagonoy-paper-$target_version-$target_build.XXXXXX")" || die "Could not create a staging file beside the server directory."
+
+    log "Downloading stable Paper build $PAPER_LATEST_BUILD..."
+    if ! curl --fail --silent --show-error --location \
+        --connect-timeout 15 --max-time 300 --retry 2 --retry-delay 2 \
+        --header "User-Agent: $PAPER_USER_AGENT" \
+        --output "$PAPER_STAGED_JAR" "$PAPER_DOWNLOAD_URL"; then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        die "Paper download failed. The live JAR and server have not been changed."
+    fi
+
+    downloaded_size="$(stat -c '%s' -- "$PAPER_STAGED_JAR")"
+    [[ "$downloaded_size" == "$PAPER_DOWNLOAD_SIZE" ]] || {
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        die "Downloaded JAR size does not match PaperMC metadata. The live JAR was not changed."
+    }
+    downloaded_sha="$(sha256sum "$PAPER_STAGED_JAR" | awk '{print tolower($1)}')"
+    [[ "$downloaded_sha" == "${PAPER_SHA256,,}" ]] || {
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        die "Downloaded JAR SHA-256 does not match PaperMC metadata. The live JAR was not changed."
+    }
+    if ! python3 - "$PAPER_STAGED_JAR" <<'PY'
+import sys
+import zipfile
+
+path = sys.argv[1]
+try:
+    with zipfile.ZipFile(path) as archive:
+        bad_member = archive.testzip()
+        if bad_member is not None:
+            raise ValueError(f"corrupt ZIP member: {bad_member}")
+        if "META-INF/MANIFEST.MF" not in archive.namelist():
+            raise ValueError("JAR manifest is missing")
+except Exception as exc:
+    print(f"JAR validation failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+        die "Downloaded file is not a readable JAR archive. The live JAR was not changed."
+    fi
+    log "Download size, SHA-256 and JAR structure verified."
+
+    log "Gracefully stopping Minecraft without creating a world backup..."
+    PAPER_UPDATE_ROLLBACK_DIR=""
+    PAPER_UPDATE_ROLLBACK_JAR=""
+    PAPER_UPDATE_SERVER_STOPPED=false
+    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+    PAPER_UPDATE_KEEP_ROLLBACK=false
+    trap paper_update_exit_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    # Mark the transaction as requiring restoration before invoking stop_server.
+    # If the process is interrupted during graceful shutdown, the EXIT handler
+    # checks the live session/port before deciding whether a restart is safe.
+    PAPER_UPDATE_SERVER_STOPPED=true
+    stop_server
+
+    if has_tmux_session "$TMUX_SESSION"; then
+        warn "Minecraft still has a managed tmux session after graceful stop. The JAR was not changed."
+        return 1
+    fi
+    if port_is_open; then
+        warn "Minecraft port $MINECRAFT_PORT is still listening after graceful stop. The JAR was not changed."
+        return 1
+    fi
+
+    PAPER_UPDATE_ROLLBACK_DIR="$(mktemp -d --tmpdir="$mc_parent" ".hagonoy-paper-rollback.XXXXXX")" || die "Could not create temporary Paper rollback storage beside the server directory."
+    PAPER_UPDATE_ROLLBACK_JAR="$PAPER_UPDATE_ROLLBACK_DIR/$PAPER_JAR"
+    previous_jar="$PAPER_UPDATE_ROLLBACK_JAR"
+    cp -p -- "$MC_DIR/$PAPER_JAR" "$previous_jar" || die "Could not preserve the previous Paper JAR. The update was not installed."
+
+    PAPER_UPDATE_NEW_JAR_INSTALLED=true
+    if ! mv -f -- "$PAPER_STAGED_JAR" "$MC_DIR/$PAPER_JAR"; then
+        PAPER_UPDATE_NEW_JAR_INSTALLED=false
+        warn "Could not install the verified new Paper JAR. The original JAR is unchanged."
+        return 1
+    fi
+    PAPER_STAGED_JAR=""
+
+    log "Installed Paper build $PAPER_LATEST_BUILD. Starting Minecraft and checking readiness..."
+    local update_started=false
+    if ( start_server ); then
+        if paper_read_installed && [[ "$PAPER_CURRENT_VERSION" == "$target_version" && "$PAPER_CURRENT_BUILD" == "$target_build" ]]; then
+            update_started=true
+        fi
+    fi
+
+    if [[ "$update_started" == true ]]; then
+        PAPER_UPDATE_SERVER_STOPPED=false
+        PAPER_UPDATE_NEW_JAR_INSTALLED=false
+        if [[ -n "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+            if rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+                PAPER_UPDATE_ROLLBACK_DIR=""
+                PAPER_UPDATE_ROLLBACK_JAR=""
+            else
+                warn "Paper update succeeded, but temporary rollback storage could not be removed: $PAPER_UPDATE_ROLLBACK_DIR"
+            fi
+        fi
+        trap - EXIT INT TERM
+        log "Paper update successful: Minecraft $target_version, Paper build $target_build."
+        log "Inspect the new startup log for plugin warnings; readiness confirms startup, not every plugin's behavior."
+        return 0
+    fi
+
+    warn "New Paper build did not pass the startup/readiness/version check. Beginning rollback."
+    if has_tmux_session "$TMUX_SESSION"; then
+        if ! ( stop_server ); then
+            PAPER_UPDATE_KEEP_ROLLBACK=true
+            warn "Could not confirm a graceful stop of the new server. No JAR was replaced while Java might still be running. Previous JAR recovery copy: $previous_jar"
+            return 1
+        fi
+    fi
+    if port_is_open; then
+        PAPER_UPDATE_KEEP_ROLLBACK=true
+        warn "Port $MINECRAFT_PORT is still listening without the managed session. Refusing to replace the JAR while a server may be active. Previous JAR recovery copy: $previous_jar"
+        return 1
+    fi
+
+    local rollback_stage
+    rollback_stage="$(mktemp --tmpdir="$mc_parent" ".hagonoy-paper-restore.XXXXXX")" || {
+        warn "Could not stage the previous JAR for rollback. Recovery copy remains at $previous_jar."
+        return 1
+    }
+    if ! cp -p -- "$previous_jar" "$rollback_stage" || ! mv -f -- "$rollback_stage" "$MC_DIR/$PAPER_JAR"; then
+        rm -f -- "$rollback_stage"
+        warn "Rollback copy failed. Recovery copy remains at $previous_jar; inspect before starting Minecraft."
+        return 1
+    fi
+    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+
+    if [[ -n "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+        if rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+            PAPER_UPDATE_ROLLBACK_DIR=""
+            PAPER_UPDATE_ROLLBACK_JAR=""
+        else
+            warn "Previous JAR was restored, but temporary rollback storage remains: $PAPER_UPDATE_ROLLBACK_DIR"
+        fi
+    fi
+
+    warn "Previous Paper JAR restored. Starting the previous build..."
+    if ( start_server ) && paper_read_installed && [[ "$PAPER_CURRENT_VERSION" == "$target_version" && "$PAPER_CURRENT_BUILD" == "$old_build" ]]; then
+        warn "Rollback start completed on Paper build $old_build."
+    else
+        warn "Previous JAR was restored, but readiness was not confirmed. Inspect the console and logs before proceeding."
+    fi
+    PAPER_UPDATE_SERVER_STOPPED=false
+    trap - EXIT INT TERM
+    return 1
+}
+
+show_status() {
+    require_command tmux
+    require_command ss
+    printf 'Hagonoy SMP status\n'
+    printf '%-18s %s\n' 'Server directory:' "$MC_DIR"
+    if has_tmux_session "$TMUX_SESSION"; then
+        printf '%-18s %s\n' 'Minecraft tmux:' 'RUNNING'
+    else
+        printf '%-18s %s\n' 'Minecraft tmux:' 'STOPPED'
+    fi
+    if port_is_open; then
+        printf '%-18s %s\n' "Port $MINECRAFT_PORT:" 'LISTENING'
+    else
+        printf '%-18s %s\n' "Port $MINECRAFT_PORT:" 'CLOSED'
+    fi
+    if has_tmux_session "$PLAYIT_SESSION"; then
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (Hagonoy tmux)'
+    elif playit_system_service_active; then
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (systemd service)'
+    elif playit_process_active; then
+        printf '%-18s %s\n' 'Playit agent:' 'RUNNING (external process)'
+    else
+        printf '%-18s %s\n' 'Playit agent:' 'STOPPED'
+    fi
+    if [[ -d "$MC_DIR" ]]; then
+        printf '%-18s %s\n' 'Server disk use:' "$(du -sh -- "$MC_DIR" | awk '{print $1}')"
+    else
+        printf '%-18s %s\n' 'Server disk use:' 'directory missing'
+    fi
+    printf '%-18s %s\n' 'Backup location:' "$BACKUP_DIR"
+    if [[ -d "$BACKUP_DIR" ]]; then
+        printf '%-18s %s\n' 'Backup free space:' "$(df -h --output=avail "$BACKUP_DIR" | tail -n 1 | xargs)"
+    fi
+}
+
+run_doctor() {
+    local failures=0
+    printf 'Hagonoy SMP system check\n'
+    for cmd in tmux ss tar git; do
+        if command -v "$cmd" >/dev/null 2>&1; then printf '[OK] %s found\n' "$cmd"; else printf '[MISSING] %s\n' "$cmd"; failures=$((failures + 1)); fi
+    done
+    if [[ -d "$MC_DIR" ]]; then printf '[OK] Minecraft directory: %s\n' "$MC_DIR"; else printf '[MISSING] Minecraft directory: %s\n' "$MC_DIR"; failures=$((failures + 1)); fi
+    if [[ -d "$MC_DIR" && "$START_COMMAND" == ./* && -f "$MC_DIR/${START_COMMAND#./}" && -x "$MC_DIR/${START_COMMAND#./}" ]]; then
+        printf '[OK] Start command target exists and is executable\n'
+    elif [[ "$START_COMMAND" == ./* ]]; then
+        printf '[MISSING OR NOT EXECUTABLE] Start command target: %s\n' "$MC_DIR/${START_COMMAND#./}"; failures=$((failures + 1))
+    else
+        printf '[INFO] Start command is a PATH command or shell command: %s\n' "$START_COMMAND"
+    fi
+    if [[ -d "$BACKUP_DIR" ]]; then printf '[OK] Backup directory exists: %s\n' "$BACKUP_DIR"; else printf '[INFO] Backup directory will be created when needed: %s\n' "$BACKUP_DIR"; fi
+    if command -v java >/dev/null 2>&1; then java -version 2>&1 | head -n 1; else printf '[WARNING] java not found in PATH; it may be launched by your start script.\n'; fi
+    if [[ "$PLAYIT_AUTO_START" == "true" ]]; then
+        if command -v "${PLAYIT_COMMAND%% *}" >/dev/null 2>&1; then printf '[OK] Playit command found\n'; else printf '[WARNING] Playit is enabled but command not found: %s\n' "$PLAYIT_COMMAND"; fi
+    else
+        printf '[INFO] Playit auto-start is disabled.\n'
+    fi
+    if playit_system_service_active; then
+        printf '[OK] Playit systemd service is active.\n'
+    elif playit_process_active; then
+        printf '[INFO] A Playit process is active outside Hagonoy.\n'
+    fi
+    if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        printf '[OK] Paper updater dependencies found (curl, jq, sha256sum, python3).\n'
+    else
+        printf '[INFO] Paper updater dependencies incomplete; run ./install.sh or install curl, jq, and python3.\n'
+    fi
+    if (( failures > 0 )); then printf '\n%d check(s) need attention.\n' "$failures"; return 1; fi
+    printf '\nCore checks passed. Review Java/Playit warnings if applicable.\n'
+}
+
+show_help() {
+    cat <<'HELP'
+Hagonoy SMP Manager
+
+Usage: ./hagonoy <command>
+
+Commands:
+  start          Start the authoritative Ubuntu server
+  stop           Gracefully stop the authoritative Ubuntu server
+  restart        Gracefully restart the authoritative Ubuntu server
+  status         Show both hosts, ports and server states
+  backup         Manage dual-vault backups (--plan|--execute)
+  restore        Restore a verified backup into a new, separate directory (server must be stopped)
+  paper-check    Check the installed Paper build against stable builds for the same Minecraft version
+  paper-update   Update Paper within the installed Minecraft version (--plan|--execute)
+  attach         Attach to the Minecraft tmux console (Ctrl+B, then d to detach)
+  playit-start   Start the Playit agent in its own tmux session
+  playit-stop    Send Ctrl+C to the Playit agent
+  doctor         Run dual-host preflight checks
+  update-manager Update this Git checkout using git pull --ff-only
+  dual-status    Show Ubuntu live, Windows canonical and staging status
+  dual-generation Inspect and compare canonical generation manifests (read-only)
+  dual-generation-init Establish Ubuntu generation 1 (--plan or explicitly confirmed --execute)
+  dual-start      Start or verify the authoritative Ubuntu server
+  dual-stop       Gracefully stop Ubuntu and verify its generation manifest
+  dual-update     Update Ubuntu Paper safely (--plan or explicitly confirmed --execute)
+  dual-pull       Synchronize Ubuntu to Windows (--plan|--execute|--handoff)
+  dual-push       Synchronize Windows to Ubuntu (--plan|--execute)
+  windows-start   Start Windows canonical when Ubuntu is stopped
+  windows-stop    Gracefully stop Windows canonical
+  dual-preflight  Preview the dual-host backup source and storage requirements
+  dual-backup     Dual-host backup operation (--plan|--execute)
+  border         Plan or apply approved per-dimension world borders (--plan|--apply)
+  addons         Inventory downloaded Paper/plugins/VanillaTweaks files (--plan)\n  update         Read-only update inventory (--plan; deployment not yet enabled)
+  pull           Transfer Ubuntu to Windows (--plan|--execute)
+  push           Windows to Ubuntu transfer (--plan|--execute)
+  ignite         Start the authoritative host
+  update         Full Minecraft, Paper and plugin update (not yet implemented)
+  preflight      Check both hosts and backup storage (read-only)
+  help           Show this help
+
+WSL coordinator: config/dual-host.conf | Single-host: config/manager.conf
+HELP
+}
+
+update_manager() {
+    require_command git
+    git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "This directory is not a Git checkout."
+    if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then
+        die "There are uncommitted changes in the manager checkout. Commit or back them up before updating."
+    fi
+    log "Updating manager with fast-forward-only pull..."
+    git -C "$PROJECT_DIR" pull --ff-only
+}
+
+command="${1:-help}"
+if [[ "$command" == "help" || "$command" == "-h" || "$command" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+
+# Unified everyday commands: active only in the WSL coordinator checkout.
+# The physical Ubuntu checkout has no dual-host config and keeps local controls.
+if [[ -f "$PROJECT_DIR/config/dual-host.conf" ]]; then
+case "$command" in
+    status)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy status"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-status"
+        ;;
+    start|ignite)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy ignite"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        ;;
+    restart)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy restart"
+        "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    preflight|doctor)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy preflight"
+        exec "$PROJECT_DIR/bin/hagonoy-dual"
+        ;;
+    backup)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy backup --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-backup" "$1"
+        ;;
+    pull)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-pull" "$@"
+        ;;
+    push)
+        exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
+        ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy addons --plan"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        ;;
+    update)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Full addon deployment is not enabled yet. Use './hagonoy update --plan' for the read-only update inventory."
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        ;;
+    paper-check)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update --plan
+        ;;
+    paper-update)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy paper-update --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
+        ;;
+    update)
+        die "Full Minecraft-version, Paper and plugin update is not implemented yet. Use paper-check or paper-update for the existing Paper-only workflow."
+        ;;
+    restore|attach|playit-start|playit-stop)
+        die "Command '$command' is not yet integrated into the dual-host coordinator. Refusing to run against local WSL paths."
+        ;;
+esac
+fi
+
+# DUAL-HOST COORDINATOR ROUTER
+# Existing explicit dual-* commands remain supported.
+case "$command" in
+    dual-status)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-status"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-status"
+        ;;
+    dual-generation)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-generation"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-generation"
+        ;;
+    dual-generation-init)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-generation-init" "$@"
+        ;;
+    dual-start)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-start"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" start
+        ;;
+    windows-start)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy windows-start"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-windows-lifecycle" start
+        ;;
+    windows-stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy windows-stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-windows-lifecycle" stop
+        ;;
+    dual-stop)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-stop"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" stop
+        ;;
+    dual-update)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy dual-update --plan|--execute"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
+        ;;
+    dual-push)
+        exec "$PROJECT_DIR/bin/hagonoy-dual-push" "$@"
+        ;;
+    dual-pull)
+        shift
+        exec "$PROJECT_DIR/bin/hagonoy-dual-pull" "$@"
+        ;;
+    dual-preflight)
+        [[ $# -eq 1 ]] || die "Usage: ./hagonoy dual-preflight"
+        exec "$PROJECT_DIR/bin/hagonoy-dual"
+        ;;
+    dual-backup)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy dual-backup --plan"
+        exec "$PROJECT_DIR/bin/hagonoy-dual-backup" --plan
+        ;;
+    border)
+        shift
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
+        ;;
+    addons)
+        shift
+        [[ $# -eq 1 && "$1" == "--plan" ]] ||
+            die "Usage: ./hagonoy addons --plan"
+        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        ;;
+    pull|push|ignite|update)
+        die "Dual-host command '$command' is not implemented yet. Refusing to execute."
+        ;;
+esac
+
+[[ -f "$CONFIG_FILE" ]] || die "Config not found: $CONFIG_FILE\nCopy config/manager.conf.example to config/manager.conf and edit it."
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+validate_config
+
+case "$command" in
+    start) start_server ;;
+    stop) stop_server ;;
+    restart) stop_server; start_server ;;
+    status) show_status ;;
+    backup) backup_server ;;
+    restore) shift; restore_server "$@" ;;
+    paper-check) paper_check ;;
+    paper-update) paper_update ;;
+    attach)
+        require_command tmux
+        has_tmux_session "$TMUX_SESSION" || die "Minecraft tmux session '$TMUX_SESSION' is not running."
+        exec tmux attach-session -t "$TMUX_SESSION"
+        ;;
+    playit-start) require_command tmux; start_playit manual ;;
+    playit-stop) require_command tmux; stop_playit ;;
+    doctor) run_doctor ;;
+    update-manager) update_manager ;;
+    help|-h|--help) show_help ;;
+    *) show_help >&2; die "Unknown command: $command" ;;
+esac
