@@ -84,29 +84,33 @@ The user's intended direction is:
 
 ## Current implementation checkpoint — 2026-11-13
 
-Source: user-supplied terminal output in the current conversation.
+Source: user-supplied WSL terminal output.
 
-- User applied the GeyserMC download-key correction to the WSL checkout:
-  - Updated `bin/hagonoy-generation` to use API download identifier `spigot` instead of the artifact filename in the request URL.
-  - Added `tests/dual-geyser-download-key-check.py`.
-  - The patch reported manager source/test changes only; no Minecraft process, server JAR, plugin, world, datapack, or backup was touched.
-- The test suite has NOT yet been rerun after this patch. An earlier test command failed immediately because the regression test did not exist before the patch was applied. Run the regression test and the existing targeted updater/Paper suites now.
-- Latest successful plan-only output: Minecraft 26.3; Paper build 244 -> 249; Geyser 2.12.1 build 1302; Floodgate already current (2.2.5 snapshot/build 141, official hash matched). No unrelated plugins/world/datapacks targeted.
-- A previous live execution attempt downloaded Paper 249 and verified its SHA-256, then failed downloading Geyser build 1302 with HTTP 404. The failure occurred during download/staging, before graceful shutdown, live JAR replacement, or restart. Do not claim the update was installed.
-- The Geyser 404 was traced in the local source to constructing the URL with the artifact filename (for example `Geyser-Spigot.jar`) rather than the API's download key `spigot`. The correction has now been applied locally; verification is pending.
-- After the Geyser regression and existing tests pass, rerun `./hagonoy update --plan`. Do not retry execution until the plan confirms both artifacts and the intended active-host route.
-- The plan output previously said `Target: Ubuntu canonical server` and `Windows staging is excluded`. Current dual-lifecycle routing was observed to check Windows is stopped and then hard-code the Ubuntu remote lifecycle. That does not yet satisfy the newly explicit requirement to detect and route updates to whichever canonical host is actually active. This is a required design gap, not completed behavior.
-- GitHub default branch code was observed to differ from the user's WSL working copy/router behavior. Do not assume remote `main` contains all latest WSL changes. Keep source patch application and Git commit/push as distinct actions. Do not push code without explicit approval.
+- GeyserMC download URL construction in the WSL checkout now uses the API download identifier `spigot`, not the artifact filename. The added Geyser/Floodgate URL regression suite passes for build 1302 and build 141.
+- The URL regression test fixture was corrected to obey the default-channel-only contract. The core API test's stale URL expectation was also corrected from `/downloads/Geyser-Spigot.jar` to `/downloads/spigot`.
+- Latest batch: ALL NINE CHECKS PASSED:
+  1. Python compilation of `bin/hagonoy-generation`.
+  2. `tests/dual-runtime-version-probe-check.py`.
+  3. `tests/dual-geyser-download-key-check.py`.
+  4. `tests/dual-core-update-api-check.sh`.
+  5. `tests/dual-core-update-plan-check.sh`.
+  6. `tests/dual-core-update-execution-check.sh`.
+  7. `tests/dual-paper-update-api-check.sh`.
+  8. `tests/dual-paper-update-plan-check.sh`.
+  9. `tests/dual-paper-update-execution-check.sh`.
+- The simulated runtime mismatch/readiness failures in execution tests are intentional failure cases; the suites verified rollback/recovery.
+- Tests did not contact or change the live server. The previous live execution downloaded and SHA-256-verified Paper 249, then encountered Geyser HTTP 404 before graceful shutdown, JAR replacement, or restart. The live server must still be treated as unchanged until a fresh live readback proves otherwise.
+- Latest plan snapshot (refresh before execution): Ubuntu target, Minecraft 26.3, Paper 244 -> 249, Geyser 2.12.1 build 1302, Floodgate already current. The output said Windows staging was excluded; current routing is not host-agnostic and does not meet the user's requirement.
+- GitHub `main` is the documentation record and may lag the user's local WSL checkout. Do not overwrite the WSL checkout from remote main. Do not push manager source changes without explicit approval.
 
 ## Current next actions
 
-1. Run `python3 -m py_compile bin/hagonoy-generation`.
-2. Run `python3 tests/dual-geyser-download-key-check.py`.
-3. Run the existing focused API, plan, execution, and Paper regression suites.
-4. Run `./hagonoy update --plan` and review the active host and artifact routing.
-5. Implement and test active-host detection/routing; current Ubuntu-only hard-coding must not be represented as host-agnostic.
-6. Integrate the canonical D: artifact cache so all component candidates are downloaded, verified, atomically cached, transferred, and deployed to the detected active host.
-7. Only after those gates pass, perform an explicitly authorized live update and verify the same active host returns healthy.
+1. Complete the central artifact-cache flow using `D:\\Hagonoy-SMP\\server-update-downloads` / WSL `/mnt/d/Hagonoy-SMP/server-update-downloads`: discover stable releases, download to temporary files, verify, atomically promote, transfer to the selected active host, and verify again remotely.
+2. Complete host-agnostic routing before any live update: confirm exactly one canonical host is running and the other stopped using manifest/generation identity, tmux/process state, Java TCP, Bedrock UDP, and reachability. Fail closed on any ambiguity; never default to Ubuntu.
+3. Batch targeted tests for both changed workflows. Run one fresh read-only `./hagonoy update --plan` and confirm it reports the real active host, cache path, transfer path, and exact target artifacts.
+4. Once both requirements are satisfied, request explicit live-update approval, execute on the detected host, and verify Paper/Geyser/Floodgate plus server readiness on that same host.
+
+The user expects the maintenance work to finish within a two-day window. Avoid repetitive audits and one-test-at-a-time loops. Batch concrete work and proceed directly through the remaining gates. Do not bypass active-host detection, artifact verification, graceful lifecycle, or rollback safety to save time.
 
 ## Boundaries and deferred work
 
