@@ -225,3 +225,18 @@ Source: user-provided WSL command output.
 - The combined updater downloads beside live JAR targets and does not use the central D: cache.
 - The archive omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`. These existing status/Windows scripts must be read before integrating host detection, to reuse the established status and generation semantics.
 - Nine targeted regression suites pass. Central-cache integration and active-host routing remain unimplemented and untested. No live server changes were made.
+
+
+## Active-host inspection checkpoint — 2026-11-13
+
+User supplied the remaining WSL dual-host scripts and selected generation-helper functions. The inspection confirms there is no safe active-host detector to reuse as-is:
+
+- bin/hagonoy-dual-status classifies each host mainly from tmux-session presence plus Java TCP listener count. It prints Bedrock UDP counts but does not require/use them for state classification. It does not validate generation manifest host/state/ID/ancestry, Java PID/process identity, or canonical process working directory.
+- bin/hagonoy-dual-windows-lifecycle is a lifecycle guard, not a selector. It checks Ubuntu's manifest says stopped plus no tmux session/TCP/UDP before operating Windows; Windows start/stop then uses host-specific generation-helper commands.
+- bin/hagonoy-dual contains backup-source selection only. Its lightweight state checks are not suitable for update authorization.
+- bin/hagonoy-generation select() applies only when the extant generation manifests are STOPPED. It compares generation numbers and ancestry; equal generation IDs explicitly do not prove byte-identical server trees. Do not repurpose it to select a live host.
+- verify_running_server_windows() gives useful partial evidence (unique Java process owning the TCP listener, server.jar command line, Bedrock UDP endpoint, tmux session and canonical pane path, runtime versions), but the Java process's own working directory is not independently tied to the canonical directory. verify_stopped_server() checks manifest stopped/session absence/listeners, but its Ubuntu branch only checks TCP while Windows checks TCP and UDP.
+- A new updater-specific read-only detector is required. It must positively verify host reachability, manifest identity/state, tmux/process/listener evidence, Java/Bedrock endpoints, and canonical server process directory; exactly one host must be fully RUNNING and the other fully STOPPED. Conflicting, incomplete, unreachable, both-running, or both-stopped results abort. Re-probe immediately before stop/replacement.
+- Do not use existing status output or the stopped-generation selector as sufficient authority evidence. The core updater still must be threaded with the selected host and D: cache end-to-end.
+
+The previously passing nine local regression tests remain confirmed; they do not cover this detector or central-cache integration. No live operation or server-file change occurred during this inspection.
