@@ -189,3 +189,27 @@ User supplied the WSL implementations of load() (lines 28–76) and verify_runni
 - The Windows branch delegates to verify_running_server_windows(). The earlier supplied body verifies Java listener ownership/process executable and server.jar command line, Bedrock UDP presence, tmux session and canonical pane path, and runtime versions; it does not independently read the Java process working directory. The existing stopped verifier's Ubuntu branch checks TCP only, whereas its Windows branch checks both TCP and UDP.
 - Design direction: preserve/reuse load() validation, then require explicit matching host/state/generation ID; strengthen UDP and Windows working-directory verification; fail closed unless exactly one host is fully RUNNING and the other fully STOPPED; recheck before stop/replacement.
 - No code was patched, no live server operation occurred, and no server files changed during this inspection. Existing nine focused tests remain the last confirmed local test batch; they do not exercise these additional requirements.
+
+
+## 2026-11-13 — Core transaction and CLI routing inspected
+
+User supplied the complete WSL source for save(), save_new(), verify_core_update_runtime(), update_core_server(), and core-update CLI parser/dispatch references.
+
+### What the existing transaction already does
+
+- Discovers Paper stable metadata and only already-installed recognized Geyser/Floodgate plugin identities.
+- Builds the set of components requiring updates and makes no change when all are current.
+- In execute mode, stages all candidate JARs and checks their declared plugin identity/version, rechecks generation ID and old target hashes, creates a transaction-local set of previous JAR copies, and syncs those copies before shutdown.
+- Gracefully stops the server, checks the stopped generation manifest and ID, rechecks target hashes, atomically replaces each target, and starts/validates the new runtime.
+- If installation or post-start validation fails, it attempts to restore all original managed JARs and restart/verify the old component set. It retains recovery copies when restoration or recovery startup cannot be established. These are temporary JAR rollback copies, not a full backup.
+
+### Confirmed implementation gaps
+
+- update_core_server() insists on a RUNNING Ubuntu manifest and verifies runtime with host ubuntu.
+- verify_core_update_runtime() hard-codes Ubuntu.
+- Every relevant stop/start/rollback/reconciliation path calls lifecycle helpers without an explicit host, so Windows selection would still fall back to their Ubuntu defaults. This includes stop_managed_server(), start_managed_server(), verify_running_server(), and mark_failed_start_stopped() calls.
+- The core-update parser/dispatch has no --host or --artifact-cache argument.
+- Download staging is adjacent to each live JAR destination; it does not use D:\\Hagonoy-SMP\\server-update-downloads.
+- save() atomically replaces an existing manifest; save_new() atomically creates one and refuses overwrite. Keep these manifest safety semantics while adding host-aware identity checks.
+
+No source patch or live operation was performed; no server files changed. The nine existing focused tests remain the last confirmed baseline and do not cover these gaps. Next: inspect lifecycle helper signatures and manifest-mutating call sites, then implement host/cache routing in one scoped patch and add tests for both host paths, rechecks, and rollback.
