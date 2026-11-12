@@ -276,3 +276,16 @@ Latest user-supplied source excerpt adds these specific safeguards to the patch 
 - The lifecycle CLI already supports --host for start-server and stop-server, but core-update still lacks a --host and artifact staging/cache interface.
 
 No source patch or live operation has been performed. Keep these checks in the same consolidated host/cache patch and tests.
+
+## Artifact download and cache handoff inspection — 2026-11-13
+
+User supplied the exact current WSL implementations of Paper/Geyser metadata discovery, verified downloads, installed managed-plugin inspection, and release comparison.
+
+- Paper stable metadata includes an official download URL, JAR name, byte size, and SHA-256. Its downloader streams to an exclusive temporary destination, checks exact byte count and SHA-256, and fsyncs the file.
+- GeyserMC metadata selects the latest default-channel build, uses the Spigot download identifier, and supplies the official SHA-256. Its downloader streams to an exclusive temporary destination and checks SHA-256. Staged plugin JARs are subsequently inspected for plugin descriptor identity and release version.
+- Existing installed-plugin discovery only targets already-installed, unambiguous Geyser-Spigot and Floodgate artifacts. It rejects managed-looking identity/filename conflicts and refuses unknown/custom installed hashes rather than replacing them blindly. Preserve these safeguards.
+- Cache integration must retain these official metadata/checksum/identity checks. Cache downloads should use temporary files in the central cache filesystem, verify fully, then atomically promote; existing verified current cache entries may be reused. Never overwrite a valid cached artifact with a partial or failed candidate.
+- Important transport constraint: WSL's /mnt/d/Hagonoy-SMP/server-update-downloads cache is local to Windows/WSL and is not directly available on the remote Ubuntu host. For Ubuntu-active execution, the coordinator needs a metadata handoff from the remote read-only plan, must populate/promote the central WSL cache locally, transfer verified artifacts to a controlled Ubuntu staging directory, and require destination-side SHA-256/JAR identity re-verification before the server stops. For Windows-active execution, the mounted central cache is directly available to the local generation helper.
+- On both hosts, final JAR replacement staging must remain on the same filesystem as each live target so os.replace() remains atomic. Central cache storage must not be used directly as the final live target staging directory when that crosses filesystems.
+- The existing helper already exposes all required metadata fields and the download/identity routines; no new upstream API or third-party downloader is needed. The full coordinator/cache handoff and both active-host routes still need implementation and dedicated tests.
+- No source patch, server operation, file replacement, backup, or cleanup was performed during this inspection. The nine previous tests remain the last confirmed baseline and do not cover cache handoff/host routing.
