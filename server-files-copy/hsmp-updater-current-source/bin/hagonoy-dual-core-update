@@ -162,16 +162,21 @@ PY
 run_active_core_update() {
     local mode="$1" artifact_cache="${2:-}"
     if [[ "$ACTIVE_HOST" == "windows" ]]; then
-        run_windows_helper core-update "$WINDOWS_SERVER_DIR" \
-            --session "$WINDOWS_TMUX_SESSION" \
-            --port "$MINECRAFT_PORT" \
-            --bedrock-port "$BEDROCK_PORT" \
-            --ready-pattern "$READY_PATTERN" \
-            --start-timeout "$START_TIMEOUT_SECONDS" \
-            --stop-timeout "$STOP_TIMEOUT_SECONDS" \
-            --host windows \
-            ${artifact_cache:+--artifact-cache "$artifact_cache"} \
-            "$mode"
+        local -a args=(
+            core-update "$WINDOWS_SERVER_DIR"
+            --session "$WINDOWS_TMUX_SESSION"
+            --port "$MINECRAFT_PORT"
+            --bedrock-port "$BEDROCK_PORT"
+            --ready-pattern "$READY_PATTERN"
+            --start-timeout "$START_TIMEOUT_SECONDS"
+            --stop-timeout "$STOP_TIMEOUT_SECONDS"
+            --host windows
+        )
+        if [[ -n "$artifact_cache" ]]; then
+            args+=(--artifact-cache "$artifact_cache")
+        fi
+        args+=("$mode")
+        run_windows_helper "${args[@]}"
     else
         run_ubuntu_helper core-update "$UBUNTU_SERVER_DIR" "$UBUNTU_TMUX_SESSION" \
             "$MINECRAFT_PORT" "$BEDROCK_PORT" "$READY_PATTERN" \
@@ -200,7 +205,7 @@ PY
 run_plan() {
     echo
     echo "========== CORE UPDATE PLAN: $ACTIVE_HOST =========="
-    if run_active_core_update --plan "$SERVER_UPDATE_CACHE" | tee "$TMP_DIR/plan.log"; then
+    if run_active_core_update --plan | tee "$TMP_DIR/plan.log"; then
         grep -Fq "RESULT=READY_FOR_CORE_UPDATE" "$TMP_DIR/plan.log" ||
             die "Selected-host update plan did not reach its ready result."
     else
@@ -230,7 +235,7 @@ stage_remote_cache() {
         local name expected actual
         name="$(basename "$file")"
         expected="$(sha256sum "$file" | awk '{print $1}')"
-        actual="$("${SSH[@]}" "$UBUNTU_SSH_TARGET" "sha256sum '$REMOTE_CACHE_DIR/$name' | awk '{print \\$1}'")"
+        actual="$("${SSH[@]}" "$UBUNTU_SSH_TARGET" "sha256sum -- '$REMOTE_CACHE_DIR/$name' | cut -d' ' -f1")"
         [[ "$actual" == "$expected" ]] ||
             die "Ubuntu destination checksum mismatch for $name."
         echo "REMOTE_CACHE_VERIFIED=$name"
@@ -313,7 +318,7 @@ IFS= read -r confirmation
 echo
 echo "========== EXECUTE ON VERIFIED ACTIVE HOST =========="
 if run_active_core_update --execute "$DEPLOY_CACHE" | tee "$TMP_DIR/operation.log"; then
-    grep -Fq "CORE_UPDATE=SUCCESS" "$TMP_DIR/operation.log" ||
+    grep -Eq "CORE_UPDATE=(SUCCESS|ALREADY_CURRENT)" "$TMP_DIR/operation.log" ||
         die "Updater did not report a verified successful component transaction. Inspect the active server."
 else
     die "Core update command failed. Do not force-kill Java; inspect the selected host and its retained recovery files."
