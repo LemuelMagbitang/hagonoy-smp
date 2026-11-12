@@ -241,3 +241,32 @@ The lifecycle function excerpts confirm further host-specific fail-closed fixes:
 - start-server and stop-server CLI already expose --host; core-update CLI still needs a host argument plus a designed artifact-staging/cache interface.
 
 These changes are part of the same required patch as central cache and active-host detection. No live update before Windows/Ubuntu recovery paths and rollback are explicitly host-aware and tested.
+
+## Artifact transport and cache integration design — 2026-11-13
+
+The existing artifact helpers should be reused rather than rewritten:
+
+- Paper metadata contains the official HTTPS URL, safe JAR filename, expected byte count, and SHA-256. Its downloader verifies exact bytes and hash.
+- Geyser/Floodgate metadata contains the official default-channel Spigot URL, release/build, filename and SHA-256. Its downloader verifies SHA-256; the update transaction then validates plugin descriptor identity and release version.
+- Installed managed-plugin detection already refuses ambiguous duplicates, symlinks, identity/filename conflicts, and unrecognized/custom artifact hashes. It updates only recognized installed Geyser/Floodgate components.
+
+### Cache/transport topology
+
+The D: cache is mounted in WSL at /mnt/d/Hagonoy-SMP/server-update-downloads, but the Ubuntu server cannot directly address that WSL path. Therefore use two explicit flows:
+
+1. **Windows active:** the WSL generation helper operates on the canonical Windows server path and the mounted D: cache. It downloads each candidate to a unique temporary file in the cache, validates official bytes/hash/JAR identity, fsyncs and atomically promotes the verified artifact, then copies it into a host-local sibling staging file and re-verifies it before the existing transaction stops the server.
+2. **Ubuntu active:** the remote Ubuntu helper first performs a read-only discovery/plan and emits a machine-readable artifact metadata manifest (project, URL, name, build/version, expected bytes when available, SHA-256). The WSL coordinator validates/consumes that metadata, downloads candidates to temporary files in the central D: cache using the existing verified downloader routines, and atomically promotes verified files. It then transfers the exact cache artifacts via SSH/SCP to a controlled Ubuntu staging directory while the server is still running. Ubuntu verifies hashes and plugin identity/version from its own staging directory; only then does the existing update transaction begin.
+
+In both paths, final replacement staging must be beside each live JAR target on the target filesystem. Do not perform os.replace() across the D: cache and server filesystems. Cache artifacts remain outside the live server directory and outside host pull/push synchronization.
+
+The remote execute phase must refresh upstream metadata and require transferred artifact hashes/builds to match the refreshed candidates. If upstream metadata changed since the plan/cache handoff, abort before shutdown and require a fresh plan/stage cycle. Cache promotion must not replace the current verified cache entry until the candidate has passed all available verification. Reuse a cached artifact only after rechecking its official hash and required JAR/descriptor identity.
+
+### Latest helper inspection findings
+
+- fetch_paper_stable_build() selects STABLE and validates the default artifact URL host, filename, size and SHA-256.
+- fetch_geysermc_default_build() selects the maximum default channel build, uses platform/download key spigot, and validates expected artifact filename and SHA-256.
+- download_verified_paper_build() checks exact byte count and checksum; download_verified_geysermc_artifact() checks nonempty response and checksum.
+- inspect_installed_managed_plugins() only returns verified installed Geyser/Floodgate identities; no absent component should be installed.
+- plugin_needs_update() matches installed hashes against official default-channel build history and refuses downgrade or unidentified/custom artifacts.
+
+No code has yet implemented this coordinator handoff. Add dedicated offline/mock tests for cache reuse, failed checksum leaving old cache intact, atomic promotion, Ubuntu transfer and destination re-verification, Windows-local staging, metadata drift abort, and failure before server stop. Keep the existing combined transaction and rollback tests passing.
