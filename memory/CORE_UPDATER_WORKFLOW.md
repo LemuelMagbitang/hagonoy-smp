@@ -211,3 +211,20 @@ The generic Ubuntu verify_running_server() is already comparatively strong: it r
 The Windows-specific verifier previously supplied in this conversation checks unique Java TCP owner, Java executable and server.jar command line, Bedrock UDP presence, tmux session/pane path, and runtime versions. It does not independently inspect the Java process working directory. The stopped-state verifier checks both listener protocols on Windows but currently only TCP on Ubuntu. Close these gaps before treating Windows/Ubuntu evidence as equivalent.
 
 The active-host detector must require manifest host/state/generation identity to agree with live process/listener evidence, verify Java TCP and Bedrock UDP on both hosts, prove the canonical process directory (including Windows), and require exactly one fully verified RUNNING host and one fully verified STOPPED host. Recheck before stop and replacement. Do not use stopped-generation select() as a live-host selector.
+
+
+## Core transaction and CLI findings — 2026-11-13
+
+The current combined updater's transaction/rollback structure should be retained. It stages all changed JARs, rechecks current generation and installed hashes, makes temporary JAR rollback copies beside the server (not a full backup), gracefully stops, confirms stopped manifest/generation, replaces the changed set atomically, starts and verifies the updated runtime, and attempts to restore/restart the complete original component set if verification fails. It retains recovery files when recovery cannot be proven.
+
+The current host routing is hard-coded in several layers, not just the initial manifest check:
+
+- update_core_server() requires data.host == ubuntu and verifies the pre-update process as ubuntu.
+- verify_core_update_runtime() hard-codes ubuntu.
+- stop_managed_server(), start_managed_server(), verify_running_server(), mark_failed_start_stopped(), and multiple rollback/restart calls are invoked without the host argument and therefore fall back to Ubuntu defaults.
+- core-update argparse has no --host or --artifact-cache argument; dispatch passes neither to update_core_server().
+- The download stage path is next to each live target, not the central D: cache. The coordinator/cache layer must download and verify centrally, transfer and reverify on Ubuntu when selected, or use the mounted canonical Windows server path when Windows is selected. Host-local deployment staging is still needed so final replacement remains atomic on the target filesystem.
+
+save() atomically replaces an existing generation manifest; save_new() atomically creates one without overwriting. Preserve these semantics and validate expected host/generation ID during the update lifecycle. No full backup is created by this transaction.
+
+The complete implementation patch must thread a required selected host through every lifecycle, verification, failed-start, and rollback call; add host/cache CLI inputs where appropriate; and connect the central cache/transfer preflight without weakening the existing transaction. No live update until dedicated host-routing/cache tests and a fresh plan pass.
