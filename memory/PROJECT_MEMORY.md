@@ -178,3 +178,13 @@ Source: user-provided WSL command output.
 - `git diff --check` completed with no output/error (clean).
 - Patch application explicitly made no Minecraft host contact, reload, sync, backup, or world-file operation.
 - The local diff has not yet been reviewed in full or committed/pushed. Next: inspect `git diff --stat`, working-tree status, and the focused diff for the two changed files; confirm the code implements the stated bounded wait and final enabled-pack verification exactly. Do not run a live reload to test it.
+
+## Latest test diagnosis and schedule correction — 2026-11-13
+
+- User supplied the full numbered contents of `tests/dual-core-update-api-check.sh` and the `bash -x` traceback.
+- The Python heredoc starts at shell line 4, so Python traceback `<stdin>, line 48` maps to physical shell-script line 52, not shell line 48.
+- Physical line 52 is the stale URL expectation: `assert metadata["url"].endswith("/1300/downloads/Geyser-Spigot.jar")`. The production updater now correctly uses the GeyserMC API download key `spigot`, so the expected suffix must be `/1300/downloads/spigot`.
+- The build-selection assertion at physical shell line 48 is not the failing assertion. The traceback is plain `AssertionError` because the URL assertion has no custom message. Do not alter production release selection or channel filtering for this failure.
+- Required next edit is one guarded test-only string replacement in `tests/dual-core-update-api-check.sh`; then run all focused core/Paper tests in a fail-continue batch so every result is collected in one pass.
+- User explicitly requires the maintenance work to stay within a two-day update window. Avoid repeated discovery/audit loops and serial one-test-at-a-time cycles. Batch diagnostics and tests, fix concrete blockers only, then finish the live update and post-update health verification.
+- No live server, JAR, plugin, world, datapack, or backup was changed by this test failure.
