@@ -292,3 +292,7 @@ Next minimum input: add the current WSL `bin/hagonoy` to `server-files-copy/hsmp
 ## Source handoff convention — 2026-11-13
 
 For requested project-file uploads, the user designated repository `server-files-copy/` as the canonical handoff location; chat attachments are also acceptable. The current exact WSL dispatcher has been copied and staged at `server-files-copy/hsmp-updater-current-source/bin/hagonoy`. The displayed diff was still open in the pager at the last checkpoint; press `q` to exit it and allow the chained commit/push commands to continue. Verify commit/push from actual terminal output before treating the source snapshot as complete.
+
+## Dispatcher snapshot publication status — 2026-11-13
+
+The current WSL dispatcher was copied to `server-files-copy/hsmp-updater-current-source/bin/hagonoy` and committed locally as `dbef9ed` on branch `fix/border-console-pane-and-parser-20261111`. The commit succeeded; `git push` failed only because no upstream branch was configured. Run `git push --set-upstream origin fix/border-console-pane-and-parser-20261111`, then verify the path on that branch. Do not repeat the commit or treat the file as published before the push succeeds.
