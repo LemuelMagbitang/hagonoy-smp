@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="hsmp-proc-scan-") as temporary:
     proc.mkdir()
     process = proc / "4321"
     process.mkdir()
-    (process / "comm").write_text("java\\n", encoding="utf-8")
+    (process / "comm").write_text("java\n", encoding="utf-8")
     (process / "cwd").symlink_to(server)
     assert module.java_processes_in_directory(server, str(proc)) == ["4321"]
     assert module.java_processes_in_directory(other, str(proc)) == []
