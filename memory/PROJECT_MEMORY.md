@@ -289,3 +289,12 @@ User supplied the exact current WSL implementations of Paper/Geyser metadata dis
 - On both hosts, final JAR replacement staging must remain on the same filesystem as each live target so os.replace() remains atomic. Central cache storage must not be used directly as the final live target staging directory when that crosses filesystems.
 - The existing helper already exposes all required metadata fields and the download/identity routines; no new upstream API or third-party downloader is needed. The full coordinator/cache handoff and both active-host routes still need implementation and dedicated tests.
 - No source patch, server operation, file replacement, backup, or cleanup was performed during this inspection. The nine previous tests remain the last confirmed baseline and do not cover cache handoff/host routing.
+
+## Current source-bundle handoff checkpoint — 2026-11-13
+
+- User created the exact-source archive in WSL at `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip`.
+- User-reported archive contains 16 required files and local SHA-256 `bfd49c91244869bab4ce0d48fe3a1d57fbba0fd89aad9a0d1dbc125fa10e5944`.
+- The ZIP itself has not yet been attached to the conversation or materialized into the assistant runtime. Its contents and checksum have therefore NOT been independently inspected/verified by the assistant. Do not claim the bundle has been received or patched.
+- Current phase: exact-source handoff, immediately before creating the consolidated updater patch. All required design findings are complete: existing transaction/rollback, host-specific lifecycle gaps, active-host evidence gaps, official artifact checks, and Windows/Ubuntu cache-transfer topology.
+- Last confirmed tests are the nine focused baseline suites recorded above. No new tests have been run against this source ZIP, no consolidated patch exists yet, no fresh update plan has been run, and no live update has been performed.
+- Next: user attaches the ZIP in this chat; verify the exact SHA-256 and inspect the archive files; create one consolidated host-routing/cache/rollback patch; batch existing and new tests; run a fresh read-only plan. Live execution remains a separate explicit-authorization step after the plan passes.
