@@ -105,3 +105,24 @@ These commits changed memory/documentation only. They did not push the user's lo
 - Next: perform a guarded test-only replacement of the expected URL suffix, then run compilation, Geyser regression, core API/plan/execution and Paper API/plan/execution suites in a fail-continue batch to collect all results in one pass.
 - User has set a two-day target for this maintenance/update work and asked for quicker, focused execution. Avoid additional discovery loops and sequential tests where a single batch can provide the same evidence.
 - No live server operation or server-file modification occurred during this test diagnosis.
+
+
+## 2026-11-13 — Core updater regression batch fully passed
+
+- User corrected the single stale URL expectation in `tests/dual-core-update-api-check.sh` from `/1300/downloads/Geyser-Spigot.jar` to `/1300/downloads/spigot`, guarded to require exactly one replacement.
+- User ran a fail-continue test batch and supplied the complete result. All nine checks passed:
+  - `python3 -m py_compile bin/hagonoy-generation`
+  - `python3 tests/dual-runtime-version-probe-check.py`
+  - `python3 tests/dual-geyser-download-key-check.py`
+  - `bash tests/dual-core-update-api-check.sh`
+  - `bash tests/dual-core-update-plan-check.sh`
+  - `bash tests/dual-core-update-execution-check.sh`
+  - `bash tests/dual-paper-update-api-check.sh`
+  - `bash tests/dual-paper-update-plan-check.sh`
+  - `bash tests/dual-paper-update-execution-check.sh`
+- The tests validated default-channel selection, Geyser/Floodgate API download-key URLs, artifact checksum verification, managed installed-plugin identity, plan-only invariants, no missing-component installation, combined transaction behavior, and rollback/recovery.
+- The mock readiness/version failure messages were deliberate negative-path tests; both execution suites passed their recovery assertions.
+- This was a local source/test operation only. No live server, JAR, plugin, world, datapack, or backup changed.
+- The live update remains incomplete. Previous real execution downloaded and verified Paper 249 but failed on Geyser HTTP 404 before shutdown/replacement/restart. No new live readback has been supplied.
+- Next work is a focused implementation pass for the user's required central cache (`D:\\Hagonoy-SMP\\server-update-downloads`) and automatic Ubuntu/Windows active-host routing. Then batch tests, fresh plan, explicitly approved live update, and live health verification.
+- User reaffirmed the two-day completion target and requested fewer loops and faster execution. Do not repeat broad discovery or serial test cycles; do not bypass the central cache, verified host detection, artifact validation, or rollback safety.
