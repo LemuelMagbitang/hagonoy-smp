@@ -2153,7 +2153,7 @@ def update_core_server(
         try:
             start_managed_server(
                 directory, session, port, ready_pattern, start_timeout,
-                host=host
+                host=host, bedrock_port=bedrock_port
             )
             # Use the plugin names from the newly staged descriptors when they
             # changed; existing names remain authoritative for skipped JARs.
@@ -2203,7 +2203,8 @@ def update_core_server(
                 try:
                     verify_running_server(
                         directory, host, "AUTO", "AUTO",
-                        session, port, require_manifest_absent=False
+                        session, port, require_manifest_absent=False,
+                        bedrock_port=bedrock_port
                     )
                     stop_managed_server(directory, session, port, stop_timeout, host=host, bedrock_port=bedrock_port)
                 except Exception as stop_error:
