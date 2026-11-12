@@ -24,6 +24,11 @@ PAPER_JAR="server.jar"
 PAPER_PREVIOUS_JAR_RETENTION="3" # Deprecated compatibility setting; no automatic deletion.
 PAPER_USER_AGENT="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
 PAPER_STAGED_JAR=""
+PAPER_UPDATE_ROLLBACK_DIR=""
+PAPER_UPDATE_ROLLBACK_JAR=""
+PAPER_UPDATE_SERVER_STOPPED=false
+PAPER_UPDATE_NEW_JAR_INSTALLED=false
+PAPER_UPDATE_KEEP_ROLLBACK=false
 
 log() { printf '[hagonoy] %s\n' "$*"; }
 warn() { printf '[hagonoy] WARNING: %s\n' "$*" >&2; }
@@ -221,6 +226,53 @@ stop_server() {
     done
 
     die "Timed out waiting for a clean shutdown. I did not kill tmux or Java. Inspect the console: ./hagonoy attach"
+}
+
+paper_update_exit_cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+
+    if [[ -n "$PAPER_STAGED_JAR" && -f "$PAPER_STAGED_JAR" ]]; then
+        rm -f -- "$PAPER_STAGED_JAR"
+        PAPER_STAGED_JAR=""
+    fi
+
+    if [[ "$PAPER_UPDATE_SERVER_STOPPED" == true ]]; then
+        if has_tmux_session "$TMUX_SESSION" || port_is_open; then
+            PAPER_UPDATE_KEEP_ROLLBACK=true
+            warn "Paper update was interrupted while Minecraft may still be active. Cleanup did not replace a JAR. Recovery copy: ${PAPER_UPDATE_ROLLBACK_JAR:-not created}"
+        else
+            if [[ "$PAPER_UPDATE_NEW_JAR_INSTALLED" == true ]]; then
+                local restore_stage=""
+                restore_stage="$(mktemp --tmpdir="$MC_DIR" ".hagonoy-paper-recovery.XXXXXX")" || restore_stage=""
+                if [[ -n "$restore_stage" ]] &&
+                   cp -p -- "$PAPER_UPDATE_ROLLBACK_JAR" "$restore_stage" &&
+                   mv -f -- "$restore_stage" "$MC_DIR/$PAPER_JAR"; then
+                    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+                    PAPER_UPDATE_KEEP_ROLLBACK=false
+                    log "Interrupted Paper update: previous JAR restored."
+                else
+                    [[ -z "$restore_stage" ]] || rm -f -- "$restore_stage"
+                    PAPER_UPDATE_KEEP_ROLLBACK=true
+                    warn "Interrupted Paper update: automatic JAR restoration failed. Recovery copy: ${PAPER_UPDATE_ROLLBACK_JAR:-not available}"
+                fi
+            fi
+
+            if [[ "$PAPER_UPDATE_NEW_JAR_INSTALLED" == false ]]; then
+                ( start_server ) || warn "Interrupted Paper update: Minecraft did not restart automatically. Inspect before proceeding."
+                PAPER_UPDATE_SERVER_STOPPED=false
+            fi
+        fi
+    fi
+
+    if [[ "$PAPER_UPDATE_KEEP_ROLLBACK" != true &&
+          -n "$PAPER_UPDATE_ROLLBACK_DIR" &&
+          -d "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+        if ! rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+            warn "Temporary Paper rollback directory could not be removed: $PAPER_UPDATE_ROLLBACK_DIR"
+        fi
+    fi
+    exit "$exit_code"
 }
 
 BACKUP_RESTART_REQUIRED=false
@@ -545,8 +597,6 @@ paper_update() {
 
     require_command tmux
     require_command ss
-    require_command tar
-    require_command df
     require_command realpath
     require_command mktemp
     require_command cp
@@ -569,9 +619,9 @@ paper_update() {
     printf '  New stable Paper build: %s\n' "$PAPER_LATEST_BUILD"
     printf '  JAR target: %s\n' "$MC_DIR/$PAPER_JAR"
     printf '  Download: %s (%s MiB)\n' "$PAPER_DOWNLOAD_NAME" "$(( (PAPER_DOWNLOAD_SIZE + 1048575) / 1048576 ))"
-    printf '  A verified backup will be created before the JAR is replaced.\n'
-    printf '  The previous JAR will be retained for rollback.\n'
-    printf '  If startup fails, Hagonoy will attempt to restore the previous JAR.\n'
+    printf '  No world TAR backup or plugin/config/datapack changes will be made.\n'
+    printf '  The previous JAR will be held temporarily outside the server directory for rollback.\n'
+    printf '  Temporary rollback data is removed after a confirmed update or rollback.\n'
 
     local answer
     if ! read -r -p "Proceed with this Paper update? [y/N] " answer; then
@@ -579,14 +629,11 @@ paper_update() {
     fi
     [[ "$answer" =~ ^[Yy]$ ]] || { log "Update cancelled. No files were changed."; return 0; }
 
-    local mc_parent timestamp previous_jar downloaded_size downloaded_sha
+    local mc_parent previous_jar downloaded_size downloaded_sha
     local target_version="$PAPER_CURRENT_VERSION"
     local old_build="$PAPER_CURRENT_BUILD"
     local target_build="$PAPER_LATEST_BUILD"
     mc_parent="$(dirname -- "$(realpath -e -- "$MC_DIR")")"
-    timestamp="$(date '+%Y%m%d-%H%M%S')"
-    previous_jar="$MC_DIR/$PAPER_JAR.previous-$timestamp-build$old_build"
-    [[ ! -e "$previous_jar" ]] || die "Previous-JAR destination already exists: $previous_jar"
     PAPER_STAGED_JAR="$(mktemp --tmpdir="$mc_parent" ".hagonoy-paper-$target_version-$target_build.XXXXXX")" || die "Could not create a staging file beside the server directory."
 
     log "Downloading stable Paper build $PAPER_LATEST_BUILD..."
@@ -634,35 +681,40 @@ PY
     fi
     log "Download size, SHA-256 and JAR structure verified."
 
-    log "Creating a verified pre-update backup and leaving Minecraft stopped..."
-    backup_server --keep-stopped
+    log "Gracefully stopping Minecraft without creating a world backup..."
+    PAPER_UPDATE_ROLLBACK_DIR=""
+    PAPER_UPDATE_ROLLBACK_JAR=""
+    PAPER_UPDATE_SERVER_STOPPED=false
+    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+    PAPER_UPDATE_KEEP_ROLLBACK=false
+    trap paper_update_exit_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    # Mark the transaction as requiring restoration before invoking stop_server.
+    # If the process is interrupted during graceful shutdown, the EXIT handler
+    # checks the live session/port before deciding whether a restart is safe.
+    PAPER_UPDATE_SERVER_STOPPED=true
+    stop_server
 
     if has_tmux_session "$TMUX_SESSION"; then
-        rm -f -- "$PAPER_STAGED_JAR"
-        PAPER_STAGED_JAR=""
-        warn "Minecraft still has a managed tmux session after backup. The JAR was not changed; inspect the server state."
+        warn "Minecraft still has a managed tmux session after graceful stop. The JAR was not changed."
         return 1
     fi
     if port_is_open; then
-        rm -f -- "$PAPER_STAGED_JAR"
-        PAPER_STAGED_JAR=""
-        warn "Minecraft port $MINECRAFT_PORT is still listening after backup. The JAR was not changed."
+        warn "Minecraft port $MINECRAFT_PORT is still listening after graceful stop. The JAR was not changed."
         return 1
     fi
 
-    if ! cp -p -- "$MC_DIR/$PAPER_JAR" "$previous_jar"; then
-        rm -f -- "$PAPER_STAGED_JAR"
-        PAPER_STAGED_JAR=""
-        warn "Could not preserve the previous Paper JAR. The original JAR is unchanged; restarting the existing server."
-        ( start_server ) || warn "Minecraft did not restart. Inspect it before proceeding."
-        return 1
-    fi
+    PAPER_UPDATE_ROLLBACK_DIR="$(mktemp -d --tmpdir="$mc_parent" ".hagonoy-paper-rollback.XXXXXX")" || die "Could not create temporary Paper rollback storage beside the server directory."
+    PAPER_UPDATE_ROLLBACK_JAR="$PAPER_UPDATE_ROLLBACK_DIR/$PAPER_JAR"
+    previous_jar="$PAPER_UPDATE_ROLLBACK_JAR"
+    cp -p -- "$MC_DIR/$PAPER_JAR" "$previous_jar" || die "Could not preserve the previous Paper JAR. The update was not installed."
 
+    PAPER_UPDATE_NEW_JAR_INSTALLED=true
     if ! mv -f -- "$PAPER_STAGED_JAR" "$MC_DIR/$PAPER_JAR"; then
-        rm -f -- "$PAPER_STAGED_JAR"
-        PAPER_STAGED_JAR=""
-        warn "Could not install the verified new Paper JAR. The original JAR is unchanged; restarting the existing server."
-        ( start_server ) || warn "Minecraft did not restart. Inspect it before proceeding."
+        PAPER_UPDATE_NEW_JAR_INSTALLED=false
+        warn "Could not install the verified new Paper JAR. The original JAR is unchanged."
         return 1
     fi
     PAPER_STAGED_JAR=""
@@ -676,41 +728,65 @@ PY
     fi
 
     if [[ "$update_started" == true ]]; then
+        PAPER_UPDATE_SERVER_STOPPED=false
+        PAPER_UPDATE_NEW_JAR_INSTALLED=false
+        if [[ -n "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+            if rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+                PAPER_UPDATE_ROLLBACK_DIR=""
+                PAPER_UPDATE_ROLLBACK_JAR=""
+            else
+                warn "Paper update succeeded, but temporary rollback storage could not be removed: $PAPER_UPDATE_ROLLBACK_DIR"
+            fi
+        fi
+        trap - EXIT INT TERM
         log "Paper update successful: Minecraft $target_version, Paper build $target_build."
         log "Inspect the new startup log for plugin warnings; readiness confirms startup, not every plugin's behavior."
-        log "Previous Paper JARs are retained; Hagonoy does not prune recovery artifacts."
         return 0
     fi
 
     warn "New Paper build did not pass the startup/readiness/version check. Beginning rollback."
     if has_tmux_session "$TMUX_SESSION"; then
         if ! ( stop_server ); then
-            warn "Could not confirm a graceful stop of the new server. The new JAR and previous JAR are both preserved; no file was replaced while Java might still be running."
+            PAPER_UPDATE_KEEP_ROLLBACK=true
+            warn "Could not confirm a graceful stop of the new server. No JAR was replaced while Java might still be running. Previous JAR recovery copy: $previous_jar"
             return 1
         fi
     fi
     if port_is_open; then
-        warn "Port $MINECRAFT_PORT is still listening without the managed session. Refusing to replace the JAR while a server may be active."
+        PAPER_UPDATE_KEEP_ROLLBACK=true
+        warn "Port $MINECRAFT_PORT is still listening without the managed session. Refusing to replace the JAR while a server may be active. Previous JAR recovery copy: $previous_jar"
         return 1
     fi
 
     local rollback_stage
-    rollback_stage="$(mktemp --tmpdir="$mc_parent" ".hagonoy-paper-rollback.XXXXXX")" || {
-        warn "Could not stage the previous JAR for rollback. Previous copy remains at $previous_jar."
+    rollback_stage="$(mktemp --tmpdir="$mc_parent" ".hagonoy-paper-restore.XXXXXX")" || {
+        warn "Could not stage the previous JAR for rollback. Recovery copy remains at $previous_jar."
         return 1
     }
     if ! cp -p -- "$previous_jar" "$rollback_stage" || ! mv -f -- "$rollback_stage" "$MC_DIR/$PAPER_JAR"; then
         rm -f -- "$rollback_stage"
-        warn "Rollback copy failed. Previous JAR remains at $previous_jar; inspect before starting Minecraft."
+        warn "Rollback copy failed. Recovery copy remains at $previous_jar; inspect before starting Minecraft."
         return 1
+    fi
+    PAPER_UPDATE_NEW_JAR_INSTALLED=false
+
+    if [[ -n "$PAPER_UPDATE_ROLLBACK_DIR" ]]; then
+        if rm -rf -- "$PAPER_UPDATE_ROLLBACK_DIR"; then
+            PAPER_UPDATE_ROLLBACK_DIR=""
+            PAPER_UPDATE_ROLLBACK_JAR=""
+        else
+            warn "Previous JAR was restored, but temporary rollback storage remains: $PAPER_UPDATE_ROLLBACK_DIR"
+        fi
     fi
 
     warn "Previous Paper JAR restored. Starting the previous build..."
     if ( start_server ) && paper_read_installed && [[ "$PAPER_CURRENT_VERSION" == "$target_version" && "$PAPER_CURRENT_BUILD" == "$old_build" ]]; then
-        warn "Rollback start completed on Paper build $old_build. Previous JAR is retained at $previous_jar."
+        warn "Rollback start completed on Paper build $old_build."
     else
         warn "Previous JAR was restored, but readiness was not confirmed. Inspect the console and logs before proceeding."
     fi
+    PAPER_UPDATE_SERVER_STOPPED=false
+    trap - EXIT INT TERM
     return 1
 }
 
@@ -817,7 +893,7 @@ Commands:
   dual-preflight  Preview the dual-host backup source and storage requirements
   dual-backup     Dual-host backup operation (--plan|--execute)
   border         Plan or apply approved per-dimension world borders (--plan|--apply)
-  addons         Inventory downloaded Paper/plugins/VanillaTweaks files (--plan)\n  update         Read-only update inventory (--plan; deployment not yet enabled)
+  addons         Manage approved datapacks (list|add|add-bundle|plan|sync)\n  update         Core software updater; datapacks are separate (--plan|--execute)
   pull           Transfer Ubuntu to Windows (--plan|--execute)
   push           Windows to Ubuntu transfer (--plan|--execute)
   ignite         Start the authoritative host
@@ -892,15 +968,13 @@ case "$command" in
         ;;
     addons)
         shift
-        [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Usage: ./hagonoy addons --plan"
-        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        exec python3 "$PROJECT_DIR/bin/hagonoy-datapacks.py" "$@"
         ;;
     update)
         shift
-        [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Full addon deployment is not enabled yet. Use './hagonoy update --plan' for the read-only update inventory."
-        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+            die "Usage: ./hagonoy update --plan|--execute"
+        exec bash "$PROJECT_DIR/bin/hagonoy-dual-core-update" "$1"
         ;;
     paper-check)
         [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
@@ -983,9 +1057,7 @@ case "$command" in
         ;;
     addons)
         shift
-        [[ $# -eq 1 && "$1" == "--plan" ]] ||
-            die "Usage: ./hagonoy addons --plan"
-        exec python3 "$PROJECT_DIR/bin/hagonoy-addons.py" --plan
+        exec python3 "$PROJECT_DIR/bin/hagonoy-datapacks.py" "$@"
         ;;
     pull|push|ignite|update)
         die "Dual-host command '$command' is not implemented yet. Refusing to execute."
