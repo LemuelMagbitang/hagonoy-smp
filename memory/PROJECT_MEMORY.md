@@ -1,17 +1,34 @@
 # HSMP Project Memory
 
-Last updated: 2026-11-12 (Asia/Manila)
+Last updated: 2026-11-13 (Asia/Manila)
 
 This is a continuity aid, not the project authority. The user's explicit decisions and clarifications are authoritative. Keep this file factual and current; never let older notes or legacy scripts override the user's direction.
 
 ## Mission
 
 - The goal is a healthy, reliable HSMP server that returns to a working, verified state after maintenance. Brief downtime is acceptable when required; correct recovery and a verified running server are the objective.
-- The major upgrade from the earlier Minecraft 1.21.x-era baseline to Minecraft 26.3 / Paper 26.3 was successfully completed. Do not reopen that migration unless the user reports a problem.
+- The server was on Minecraft 26.1 before its successful migration to Minecraft 26.3 / Paper 26.3. The user's earlier references to a 1.21.x live baseline were mistakes. Do not repeat that incorrect history or reopen the completed migration unless the user reports a problem.
 - The recurring update/maintenance manager is still being completed. Do not confuse the completed upgrade to 26.3 with completion of the updater.
 - Keep work simple, focused, and high quality. No repeated broad audits, unnecessary abstractions, redundant questions, or directory proliferation.
 - The user's decisions are the source of truth. The repository is the implementation workspace and version-control record. Legacy scripts are references only, not the authority.
 - Separate user-confirmed facts, historical command output, and unverified current state. Never claim local or server changes that were not made.
+
+## Current controlling checkpoint — 2026-11-13
+
+This section supersedes older dated work-focus and immediate-sequence sections below whenever they conflict.
+
+- Active workstream: finish the combined core updater for Paper, already-installed Geyser, and already-installed Floodgate. VPN/firewall and account authentication are deferred. Native Minecraft commands/datapack functions/dialogs/command blocks are future feature considerations, not current work.
+- Server history: previous live Minecraft version was 26.1; current migrated version is 26.3. Do not state that the previous live server was 1.21.x.
+- Latest user-supplied live plan: Ubuntu was identified as active; Windows canonical had 0 Java TCP listeners and 0 Bedrock UDP endpoints. Minecraft 26.3; Paper 244 -> 249; Geyser 2.12.1 build 1302; Floodgate already current (2.2.5-SNAPSHOT/build 141). This is a historical plan snapshot; always re-probe before execution.
+- Latest live execution attempt downloaded Paper 249 and verified its SHA-256, then failed at Geyser build 1302 download with HTTP 404 before graceful shutdown, live JAR replacement, or restart. The live update is NOT complete.
+- User successfully applied the Geyser download-key patch in the WSL checkout: `bin/hagonoy-generation` now uses API download key `spigot`; `tests/dual-geyser-download-key-check.py` was added. The patch output confirmed manager source/tests only. Targeted tests have not yet been rerun after this patch.
+- Central artifact cache: Windows `D:\\Hagonoy-SMP\\server-update-downloads`; WSL `/mnt/d/Hagonoy-SMP/server-update-downloads`. Use this established location in all HSMP artifact/patch instructions. Never assume `C:\\Users\\lemue\\Downloads`.
+- The updater must discover releases automatically, download/verify/atomically refresh this central artifact cache, then deploy only to the active host after confirming whether Ubuntu or Windows is live.
+- New required active-host detection: validate both hosts using generation manifests/identity, tmux, Java TCP, Bedrock UDP, process/canonical directory, and host reachability. Require exactly one confirmed RUNNING canonical host and one confirmed STOPPED host. Ambiguous/conflicting/unknown states must abort. Recheck before stopping/replacing. The currently observed wrapper routes to Ubuntu after checking Windows is stopped; this hard-coded behavior does not yet satisfy host-agnostic routing.
+- Push/pull semantics: pull is Ubuntu -> Windows; push is Windows -> Ubuntu. The destination server tree should become a verified copy of the authoritative source. Keep the central artifact cache separate from both server directories and do not change it during host synchronization.
+- The current failed execution did not apply the live update. The later `--plan` was read-only. Do not claim Paper 249 or Geyser build 1302 is installed.
+- GitHub memory is being maintained separately from source-code changes. Do not infer that local WSL patches have been committed/pushed or that GitHub default-branch code matches the WSL working tree. No server-manager source-code push without explicit approval.
+- For every substantive HSMP project conversation, update the concise memory, the relevant workflow document, and the dated journal; record confirmed vs pending vs completed status and supersede stale current-focus notes.
 
 ## Maintenance responsibilities and order
 
@@ -19,7 +36,7 @@ This is a continuity aid, not the project authority. The user's explicit decisio
 
 The normal updater is limited to Paper server software, Geyser, and Floodgate. Detect what is installed and update only those managed components. Do not install missing components or update unrelated plugins such as Chunky unless the user changes the scope.
 
-Discover current stable releases from official upstream sources. Files in the Windows update-downloads folder are reference/staging material, not the sole source of updates or proof of latest versions. Validate candidates and compatibility; stage safely; save and gracefully stop when required; apply; restart; and verify readiness and resulting versions. Recover/rollback safely on failure and do not leave the server stopped when safe recovery is possible.
+Discover current stable releases from official upstream sources without asking the user to type component names or versions. The Windows update-downloads folder is the designated central update-artifact cache: compare it with upstream releases, download newer verified artifacts into it, atomically replace cached artifacts only after verification, then transfer/re-verify/deploy to the positively identified active canonical host (Ubuntu or Windows). Detect the active host before every relevant transfer or live operation; never hard-code Ubuntu. If host status is unknown, conflicting, unreachable, both active, or both stopped, fail closed. Stage safely; save and gracefully stop only the verified active host; apply; restart that same host; verify readiness and resulting versions; recover/rollback safely on failure. Do not leave the server stopped when safe recovery is possible.
 
 Routine updates must not silently create full TAR backups. A full backup is a separate operation requiring its own explicit authorization. Temporary rollback artifacts are not full backups.
 
@@ -67,7 +84,7 @@ Windows server and staging paths appear in WSL as `/mnt/d/Hagonoy-SMP/...`. Do n
 - A historical point-build update attempt stopped at a generation/runtime verifier before server shutdown, save/stop, JAR replacement, or datapack deployment. Paper 26.3 build 244 was last observed installed; Paper 249 was downloaded and hash-verified in staging but not installed in that attempt. This does not undo the successful migration to Minecraft 26.3.
 - Historical runtime observation: Ubuntu was authoritative, generation 6, Minecraft 26.3, Paper 26.3-244, tmux `mcserver`, port 25565 listening; Windows generation 5 was stopped. Treat this as historical, not live status.
 
-## Immediate work sequence
+## Historical immediate work sequence (2026-11-12; superseded by the controlling checkpoint above)
 
 1. Obtain and inspect the exported worktree patch so edits target the exact current code.
 2. Finish the Paper/Geyser/Floodgate updater: upstream release discovery, installed-component detection, safe update/rollback, readiness verification, and clear progress/errors.
@@ -76,7 +93,7 @@ Windows server and staging paths appear in WSL as `/mnt/d/Hagonoy-SMP/...`. Do n
 5. Run focused tests, then review host-switching and backup utilities.
 6. For live maintenance, identify the current authoritative host, run preflight, stop gracefully only when needed, then verify the server is healthy and running again.
 
-## Current addons/datapack work focus (2026-11-12)
+## Historical addons/datapack work focus (2026-11-12; superseded by the controlling checkpoint above)
 
 The user explicitly directed that the current session resume the addons/datapack tools now. This is the active work focus, even though the core Paper/Geyser/Floodgate updater remains a separate unfinished responsibility.
 
