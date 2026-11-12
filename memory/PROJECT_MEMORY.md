@@ -200,3 +200,17 @@ Source: user-provided WSL command output.
 - Completion is not defined by a successful download or JAR replacement alone. The updater must start the same authoritative active host again, confirm runtime readiness, confirm actual Paper/Geyser/Floodgate versions, and perform meaningful health/connectivity checks. If start or verification fails, carry out the tested rollback/recovery path and continue attempting safe recovery until the prior or updated server is running and verified; report honestly if recovery cannot be established.
 - A successful update must leave one canonical host running and the other stopped, with active-host identity/generation and runtime state agreeing.
 - User supplied SHA-256 for the current WSL updater source bundle: `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`, path `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-updater-current-source.zip`. The ZIP bytes were not attached/available in this chat runtime, so its contents and hash have not been independently verified here. Do not claim inspection or patch preparation from the checksum alone.
+
+## Verified source-bundle inspection — 2026-11-13
+
+- User supplied and locally verified SHA-256 for `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-updater-current-source.zip`: `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`. The archive listing and selected source were printed by a read-only script.
+- The archive includes the top-level two-line `hagonoy` shim, `bin/hagonoy-dual-lifecycle`, `bin/hagonoy-generation`, `config/dual-host.conf`, and the focused core/Paper/Geyser tests. It omits `bin/hagonoy`, the actual command dispatcher invoked by the top-level shim; its command-routing behavior remains uninspected.
+- Verified implementation gaps from the printed source:
+  - `bin/hagonoy-dual-lifecycle` requires Ubuntu SSH configuration and always invokes the remote Ubuntu helper; its Windows check only proves Windows has no tmux/Java TCP/Bedrock UDP listener. Its output explicitly targets Ubuntu and excludes Windows staging.
+  - `bin/hagonoy-generation:update_core_server()` requires manifest host == `ubuntu` and calls `verify_running_server(..., "ubuntu", ...)`.
+  - `verify_core_update_runtime()` also hard-codes `ubuntu`.
+  - Core update stages downloads beside the live server JAR/plugin JAR targets; it does not use `/mnt/d/Hagonoy-SMP/server-update-downloads` as the designated central artifact cache.
+  - Existing generation helper contains Windows-specific runtime verification and host arguments in some lifecycle methods, but update flow does not thread the host through all verification/start/stop/rollback calls.
+- The nine targeted tests are confirmed passing from the user's latest supplied batch. They do not currently exercise central cache integration or automatic host detection/routing.
+- Next source inspection must include `bin/hagonoy` and the AST-extracted definitions of `verify_running_server`, `start_managed_server`, `stop_managed_server`, `verify_core_update_runtime`, `update_core_server`, and CLI parser/main. Do not patch the lifecycle dispatcher until its full routing contract is visible.
+- Live update remains incomplete; no new server operation was performed during source inspection.
