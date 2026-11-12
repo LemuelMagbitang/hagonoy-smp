@@ -263,3 +263,16 @@ User supplied the complete WSL implementations of save(), save_new(), verify_cor
 - Artifact staging remains adjacent to the live targets. The CLI core-update parser has no --host or --artifact-cache option, and dispatch does not pass either value. The core coordinator must populate the central D: cache and transfer/reverify artifacts before invoking the host-specific transaction; do not simply change the staging directory to D: when an atomic replace across filesystems is needed.
 - save() atomically replaces an existing generation manifest; save_new() atomically creates a manifest without overwriting an existing one. The update needs to preserve the existing manifest lifecycle and validate its host/generation identity throughout stop/start/rollback.
 - These are source inspection findings only. No source patch, live server operation, or server-file modification occurred. The previously confirmed nine tests do not cover host routing or cache behavior.
+
+
+## Lifecycle host-parameter inspection — 2026-11-13
+
+Latest user-supplied source excerpt adds these specific safeguards to the patch scope:
+
+- start_managed_server() and stop_managed_server() accept host='ubuntu' but do not require the loaded manifest's host to match the requested host before transitioning or verifying. Add a strict host/manifest match so a wrong-host call cannot silently advance or stop another copy's generation.
+- verify_stopped_server() validates manifest state and listener/session absence but does not compare manifest host against its host parameter. Add the same explicit check.
+- mark_failed_start_stopped() is Ubuntu-only: it checks tmux and Linux ss TCP only, then calls finish(). It must accept the selected host and prove the correct host's Java TCP and Bedrock UDP listeners are absent before manifest reconciliation.
+- stop_managed_server() checks both TCP and Bedrock UDP on Windows after graceful stop, but Ubuntu currently checks TCP only. Make UDP part of the Ubuntu stop verification too.
+- The lifecycle CLI already supports --host for start-server and stop-server, but core-update still lacks a --host and artifact staging/cache interface.
+
+No source patch or live operation has been performed. Keep these checks in the same consolidated host/cache patch and tests.
