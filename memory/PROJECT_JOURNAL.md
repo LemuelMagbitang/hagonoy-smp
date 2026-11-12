@@ -227,3 +227,16 @@ User supplied the complete start_managed_server(), stop_managed_server(), mark_f
 - CLI already exposes --host on start-server and stop-server. core-update remains missing host and artifact-cache/staging parameters.
 
 No code changes, live server operation, plugin/world/datapack change, or backup occurred. These host consistency and recovery checks must be included in the consolidated host/cache patch and covered by dedicated tests.
+
+## 2026-11-13 — Artifact discovery/download helpers inspected; cache topology defined
+
+User supplied source for Paper and GeyserMC metadata retrieval, verified download functions, managed plugin discovery, and version/hash comparison.
+
+- Paper metadata selects stable builds and exposes the official JAR name, URL, expected size and SHA-256. The existing streaming downloader checks exact bytes and SHA-256 before accepting the file.
+- GeyserMC metadata selects the latest default-channel Spigot build with API key spigot, expected artifact name and official SHA-256. Its streaming downloader checks nonempty response and checksum. The existing update transaction additionally validates the staged plugin descriptor identity and release version.
+- Managed plugin discovery checks actual descriptors and filenames, rejects ambiguous/unsafe identities, skips missing Geyser/Floodgate, and refuses to replace an installed artifact whose hash cannot be found in official default-channel build history. Keep this behavior intact.
+- The central cache is mounted in WSL but is not directly available on remote Ubuntu. The implementation therefore needs a read-only remote metadata plan -> local WSL central-cache download/verification/atomic promotion -> SCP to controlled Ubuntu staging -> Ubuntu destination-side re-verification -> normal host-local transaction flow. Windows-active flow can use the mounted cache directly.
+- In both modes, final JAR staging must be on the same target filesystem as the live JAR so atomic replacement remains valid. Never use the central cache as a cross-filesystem os.replace() source.
+- Refreshed metadata must still match the artifact hashes/builds on the destination before shutdown; a metadata change between plan and execution must abort safely. No partial/invalid download should replace the previously verified cache object.
+- This was source inspection/design only. No patch was generated/applied, no tests beyond the previous nine were run, and no live server/JAR/plugin/world/datapack/backup changed.
+- Next: implement the metadata/cache/transfer coordinator and host-aware lifecycle/rollback paths together, add tests for both host routes and cache failure cases, then run one batch and a fresh read-only plan. Do not repeat source audits already completed.
