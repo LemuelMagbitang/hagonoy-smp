@@ -1,12 +1,12 @@
 # HSMP Datapack / Addons Workflow Memory
 
-Last updated: 2026-11-12 (Asia/Manila)
+Last updated: 2026-11-13 (Asia/Manila)
 
 ## Purpose and authority
 
 This document records the intended design and the inspected implementation of HSMP's custom datapack management tools. It is a continuity aid. The user's latest explicit instructions are authoritative; neither this document nor older code may override them.
 
-The user's current direction (2026-11-12) is to resume work on the addons/datapack maintenance tools now. The earlier plan to finish the core software updater first is not a reason to postpone this user-directed work.
+Historical note: on 2026-11-12 the active direction temporarily shifted to addons/datapack tools. That priority has since been superseded. As of 2026-11-13 the active workstream is the core Paper/Geyser/Floodgate updater; consult memory/PROJECT_MEMORY.md for current priority. This datapack document remains the detailed reference for the separate datapack subsystem.
 
 The server's major migration to Minecraft 26.3 / Paper 26.3 is already complete. This work is about safely maintaining custom world datapacks, not repeating the migration.
 
@@ -402,3 +402,11 @@ All returned successfully. Test output confirms:
 The patcher reported no Minecraft host contact, reload, sync, backup, or world-file operation. These are offline tests only.
 
 Next required review: inspect the exact local diff for `bin/hagonoy-datapacks-remote.py` and `tests/datapack-deploy-check.py` before accepting the patch as complete. Verify bounded timeout duration, polling/progress behavior, recognition of the reload-start response, ordering of the queued `datapack list enabled` command, and that success is only emitted when every newly installed approved name is confirmed enabled. Do not trigger a live reload merely to test the helper. Do not push local code to `main` via docs connector; local user checkout remains the implementation source.
+
+
+## Priority status supersession — 2026-11-13
+
+- This document remains current as the detailed datapack workflow and historical deployment record.
+- Datapack deployment is not the active workstream in the 2026-11-13 checkpoint. The core updater is active; do not resume datapack changes unless the user directs it or the updater phase is completed and the user approves the next phase.
+- The 13 approved VanillaTweaks packs were confirmed enabled on the Ubuntu live world in the 2026-11-12 record above. Do not repeat sync/reload merely to test the core updater.
+- User's designated update-artifact cache remains D:\\Hagonoy-SMP\\server-update-downloads; WSL path /mnt/d/Hagonoy-SMP/server-update-downloads. A user-mentioned intention to delete a duplicate VanillaTweaks archive in favor of the original website bundle was not confirmed as completed. Do not claim deletion or touch those source files without explicit direction.
