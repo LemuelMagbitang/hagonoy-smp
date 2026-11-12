@@ -52,6 +52,20 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 
 REMOTE_CACHE_DIR=""
+REMOTE_PEER_LOCK_PID=""
+LOCAL_PEER_LOCK_FD=""
+
+cleanup() {
+    if [[ -n "$REMOTE_PEER_LOCK_PID" ]]; then
+        kill "$REMOTE_PEER_LOCK_PID" >/dev/null 2>&1 || true
+        wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$LOCAL_PEER_LOCK_FD" ]]; then
+        eval "exec ${LOCAL_PEER_LOCK_FD}>&-" || true
+    fi
+    rm -rf -- "$TMP_DIR"
+}
+trap cleanup EXIT
 
 build_remote_python_command() {
     python3 - "$@" <<'PY'
@@ -60,12 +74,9 @@ import sys
 
 action, *args = sys.argv[1:]
 code = 'import sys; exec(compile(sys.stdin.read(), "hagonoy-generation", "exec"))'
-argv = [
-    "flock", "-n", "/tmp/hagonoy-smp-lifecycle.lock",
-    "python3", "-c", code,
-]
 
 if action == "probe-host":
+    argv = ["python3", "-c", code]
     directory, session, port, bedrock_port = args
     argv += [
         "probe-host", directory,
@@ -75,6 +86,10 @@ if action == "probe-host":
         "--bedrock-port", bedrock_port,
     ]
 elif action == "core-update":
+    argv = [
+        "flock", "-n", "/tmp/hagonoy-smp-lifecycle.lock",
+        "python3", "-c", code,
+    ]
     directory, session, port, bedrock_port, ready, start_timeout, stop_timeout, cache_dir, expected_generation_id, mode = args
     argv += [
         "core-update", directory,
@@ -106,7 +121,7 @@ run_ubuntu_helper() {
 }
 
 run_windows_helper() {
-    flock -n /tmp/hagonoy-smp-lifecycle.lock python3 "$HELPER" "$@"
+    flock -n /tmp/hagonoy-smp-windows-lifecycle.lock python3 "$HELPER" "$@"
 }
 
 probe_both_hosts() {
@@ -189,6 +204,39 @@ run_active_core_update() {
             "$artifact_cache" "$expected_generation_id" "$mode"
     fi
 }
+
+acquire_peer_lifecycle_lock() {
+    echo
+    echo "========== RESERVE INACTIVE HOST LIFECYCLE =========="
+    if [[ "$PEER_HOST" == "windows" ]]; then
+        exec {LOCAL_PEER_LOCK_FD}>/tmp/hagonoy-smp-windows-lifecycle.lock
+        flock -n "$LOCAL_PEER_LOCK_FD" ||
+            die "Windows lifecycle is busy. The inactive host could not be reserved; no update was started."
+        echo "INACTIVE_HOST_LOCK=WINDOWS_ACQUIRED"
+    elif [[ "$PEER_HOST" == "ubuntu" ]]; then
+        local lock_log="$TMP_DIR/remote-peer-lock.log"
+        local remote_lock_command
+        remote_lock_command="flock -n /tmp/hagonoy-smp-lifecycle.lock -c 'printf \"LOCKED\\n\"; exec sleep 86400'"
+        "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_lock_command" >"$lock_log" 2>&1 &
+        REMOTE_PEER_LOCK_PID=$!
+        for _ in {1..20}; do
+            if grep -Fxq "LOCKED" "$lock_log"; then
+                echo "INACTIVE_HOST_LOCK=UBUNTU_ACQUIRED"
+                return 0
+            fi
+            if ! kill -0 "$REMOTE_PEER_LOCK_PID" 2>/dev/null; then
+                wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+                REMOTE_PEER_LOCK_PID=""
+                die "Ubuntu lifecycle is busy or unreachable. The inactive host could not be reserved."
+            fi
+            sleep 0.25
+        done
+        die "Timed out while reserving Ubuntu lifecycle; no update was started."
+    else
+        die "Unknown inactive host; cannot reserve lifecycle."
+    fi
+}
+
 
 plan_components() {
     python3 - "$TMP_DIR/plan.log" <<'PY'
@@ -319,6 +367,8 @@ printf 'To authorize this live update, type UPDATE-HSMP-%s: ' "${ACTIVE_HOST^^}"
 IFS= read -r confirmation
 [[ "$confirmation" == "UPDATE-HSMP-${ACTIVE_HOST^^}" ]] ||
     die "Confirmation did not match. No live update was started."
+
+acquire_peer_lifecycle_lock
 
 echo
 echo "========== POST-CONFIRMATION HOST AND GENERATION RECHECK =========="
