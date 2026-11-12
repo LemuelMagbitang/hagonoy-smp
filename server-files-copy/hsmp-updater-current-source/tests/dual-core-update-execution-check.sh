@@ -140,11 +140,11 @@ def run_transaction(name, fail_runtime_check):
             payload = new_geyser if metadata["project"] == "geyser" else new_floodgate
             Path(destination).write_bytes(payload)
 
-        def fake_stop(directory, _session, _port, _timeout):
+        def fake_stop(directory, _session, _port, _timeout, **_kwargs):
             current_paper = old_runtime["paper_version"] if (directory / "server.jar").read_bytes() == old_paper else new_runtime["paper_version"]
             set_state(directory, "stopped", current_paper)
 
-        def fake_start(directory, _session, _port, _ready, _timeout):
+        def fake_start(directory, _session, _port, _ready, _timeout, **_kwargs):
             paper_is_new = (directory / "server.jar").read_bytes() == new_paper
             if paper_is_new:
                 set_state(directory, "stopped", new_runtime["paper_version"])
