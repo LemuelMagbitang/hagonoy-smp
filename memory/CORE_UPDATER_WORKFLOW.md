@@ -185,3 +185,18 @@ Next: apply the fixture correction from the central cache; run the URL regressio
 - Core artifacts are staged next to live server JARs rather than in `D:\\Hagonoy-SMP\\server-update-downloads`.
 - The source archive omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`. Inspect those existing scripts before finalizing active-host detection to reuse current host/generation semantics rather than invent a competing detector.
 - The nine existing regression suites pass but do not test central cache or active-host routing.
+
+
+## Latest active-host inspection — 2026-11-13
+
+The remaining dual-host scripts were inspected from the user's current WSL checkout. None is a safe active-host selector for the updater:
+
+- bin/hagonoy-dual-status reports Windows and Ubuntu state mainly from tmux session presence plus Java TCP listener count. It reports Bedrock UDP counts but does not make them part of the RUNNING/STOPPED decision. It does not validate generation manifest host/state/ID/ancestry, Java process identity, or canonical working directory.
+- bin/hagonoy-dual-windows-lifecycle requires Ubuntu to be positively stopped (manifest state, absent tmux session, no Java TCP, no Bedrock UDP) before Windows start/stop. It is a Windows lifecycle guard, not an active-host selector.
+- bin/hagonoy-dual performs a separate backup-source decision and is not sufficiently strict for updater authority.
+- Generation helper select() requires extant manifests to be stopped and uses generation/ancestry comparison. It explicitly warns that equal generation IDs do not prove byte-identical server trees. It cannot select the currently running host.
+- Windows running verification provides partial evidence: unique Java listener owner, server.jar process command line, Bedrock UDP endpoint, tmux session/pane canonical directory, and runtime version. The Java process's own working directory is not independently verified against the canonical directory. The stopped verifier checks manifest/session/listeners, but Ubuntu currently checks TCP only and Windows checks both TCP and UDP.
+
+Implementation consequence: add a dedicated fail-closed active-host preflight for update. Require complete, host-specific evidence and exactly one verified RUNNING host plus one verified STOPPED host; abort on any missing/conflicting/unreachable evidence. Bind the selected host, generation ID, server path, and cache/transfer destinations into the plan and transaction. Recheck identity/state immediately before stop and replacement. Keep the inactive host untouched.
+
+The existing nine regression tests remain green but do not exercise these missing requirements. No live action was taken in this inspection.
