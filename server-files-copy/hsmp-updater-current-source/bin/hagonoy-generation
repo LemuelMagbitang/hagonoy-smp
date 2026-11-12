@@ -653,7 +653,7 @@ def verify_stopped_server(directory, session, port, host="ubuntu", bedrock_port=
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
             f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
-            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe
+            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
             "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_SERVER_PROCESSES='+$j"
         )
         try:
