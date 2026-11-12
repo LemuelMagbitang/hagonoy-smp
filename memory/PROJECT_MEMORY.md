@@ -251,3 +251,15 @@ User supplied the complete load() and generic verify_running_server() implementa
 - The Windows branch delegates to verify_running_server_windows(); prior printed code confirmed Java owner/process command-line, Bedrock UDP presence, tmux pane path and runtime readback, but did not independently verify the Java process's own current directory against the canonical server directory.
 - Remaining design requirements: require manifest host/state to agree with process evidence; require Bedrock UDP to be a validated part of RUNNING and STOPPED state on both hosts; add equivalent canonical-process-directory verification on Windows; prove exactly one host RUNNING and the other STOPPED; bind and recheck host/generation identity before stop and replacement. Existing loader validation is reusable rather than duplicated.
 - No source patch, live server operation, or server-file modification occurred in this inspection. The nine previous tests remain confirmed but do not cover these gaps.
+
+
+## Core transaction and CLI inspection — 2026-11-13
+
+User supplied the complete WSL implementations of save(), save_new(), verify_core_update_runtime(), update_core_server(), and relevant CLI references.
+
+- Existing core update transaction is worth preserving: stage all changed JARs, recheck generation and old hashes, create transaction-local rollback copies (not a full backup), gracefully stop, verify stopped manifest/generation, atomically replace the changed set, start and verify updated runtime, and attempt full-set rollback/restart on failure. Recovery copies are retained if recovery cannot be confirmed.
+- update_core_server() currently rejects every non-Ubuntu manifest and hard-codes ubuntu in its pre-update verifier. verify_core_update_runtime() also hard-codes ubuntu.
+- Transaction calls to stop_managed_server(), start_managed_server(), verify_running_server(), mark_failed_start_stopped(), and rollback/restart paths omit host in multiple places, so their defaults route to Ubuntu even if the top-level preflight were changed.
+- Artifact staging remains adjacent to the live targets. The CLI core-update parser has no --host or --artifact-cache option, and dispatch does not pass either value. The core coordinator must populate the central D: cache and transfer/reverify artifacts before invoking the host-specific transaction; do not simply change the staging directory to D: when an atomic replace across filesystems is needed.
+- save() atomically replaces an existing generation manifest; save_new() atomically creates a manifest without overwriting an existing one. The update needs to preserve the existing manifest lifecycle and validate its host/generation identity throughout stop/start/rollback.
+- These are source inspection findings only. No source patch, live server operation, or server-file modification occurred. The previously confirmed nine tests do not cover host routing or cache behavior.
