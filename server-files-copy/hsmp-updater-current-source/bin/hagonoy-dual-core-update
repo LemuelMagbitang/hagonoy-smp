@@ -315,6 +315,10 @@ verify_final_running_state() {
         die "Active host changed during the update. Inspect both copies; no automatic failover was attempted."
     [[ "$ACTIVE_GENERATION_ID" == "$expected_generation_id" ]] ||
         die "Final manifest generation does not match the update result."
+    [[ "$PEER_HOST" == "$INITIAL_PEER_HOST" ]] ||
+        die "Inactive host identity changed during the update."
+    [[ "$PEER_GENERATION_ID" == "$INITIAL_PEER_GENERATION_ID" ]] ||
+        die "Inactive host generation changed during the update."
 }
 
 echo "========== HSMP CORE UPDATE COORDINATOR =========="
@@ -324,6 +328,8 @@ echo "Mode: $MODE"
 probe_both_hosts
 INITIAL_ACTIVE_HOST="$ACTIVE_HOST"
 INITIAL_ACTIVE_GENERATION_ID="$ACTIVE_GENERATION_ID"
+INITIAL_PEER_HOST="$PEER_HOST"
+INITIAL_PEER_GENERATION_ID="$PEER_GENERATION_ID"
 FINAL_ACTIVE_HOST="$ACTIVE_HOST"
 
 run_plan
@@ -390,6 +396,10 @@ probe_both_hosts
     die "Active host changed after confirmation. No server stop was requested."
 [[ "$ACTIVE_GENERATION_ID" == "$INITIAL_ACTIVE_GENERATION_ID" ]] ||
     die "Active generation changed after confirmation. No server stop was requested."
+[[ "$PEER_HOST" == "$INITIAL_PEER_HOST" ]] ||
+    die "Inactive host identity changed after confirmation. No server stop was requested."
+[[ "$PEER_GENERATION_ID" == "$INITIAL_PEER_GENERATION_ID" ]] ||
+    die "Inactive host generation changed after confirmation. No server stop was requested."
 
 echo
 echo "========== EXECUTE ON VERIFIED ACTIVE HOST =========="
