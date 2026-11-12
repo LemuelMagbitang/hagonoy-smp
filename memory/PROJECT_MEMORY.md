@@ -323,3 +323,11 @@ User supplied the exact current WSL implementations of Paper/Geyser metadata dis
 - User designated repository folder `server-files-copy/` as the preferred place to upload project files requested for inspection or patch preparation. They may alternatively attach files in chat.
 - For future source/patch handoffs, prefer `server-files-copy/` in GitHub or a chat attachment; do not assume local WSL paths are directly accessible to the assistant.
 - User has just staged the exact current WSL `bin/hagonoy` dispatcher into `server-files-copy/hsmp-updater-current-source/bin/hagonoy` and displayed the staged diff. At the last reported point, the terminal was still in the Git diff pager; user was instructed to press `q` so the existing command chain can continue to commit and push. Commit/push completion is NOT yet confirmed.
+
+## Dispatcher snapshot commit — push pending — 2026-11-13
+
+- User's WSL command successfully created and committed the exact current dispatcher snapshot file `server-files-copy/hsmp-updater-current-source/bin/hagonoy` in local branch `fix/border-console-pane-and-parser-20261111`.
+- Local commit: `dbef9ed` (`Add current WSL dispatcher to updater source snapshot`); one file changed, 1,092 lines added.
+- `git push` did not push because this local branch has no configured upstream. Git advised `git push --set-upstream origin fix/border-console-pane-and-parser-20261111`.
+- The commit exists locally and must NOT be recreated or cherry-picked again. Next action is to run the suggested push command, then verify the file is visible in GitHub `server-files-copy/hsmp-updater-current-source/bin/hagonoy` on that branch. Once pushed, use that branch/revision for snapshot extraction; do not assume it is already on `main`.
+- No live server or Minecraft artifacts were touched.
