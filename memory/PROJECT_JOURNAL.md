@@ -157,3 +157,23 @@ These commits changed memory/documentation only. They did not push the user's lo
 - The core update downloads next to live JAR/plugin targets instead of using the central cache.
 - The ZIP omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`, which must be inspected before completing the single-source-of-truth host detector.
 - Nine core updater regression suites are passing. These tests do not cover central cache or active-host routing. No live server or server files were changed during this inspection.
+
+
+## 2026-11-13 — Existing dual-host status and lifecycle scripts inspected
+
+User supplied the current WSL contents of bin/hagonoy-dual-status, bin/hagonoy-dual-windows-lifecycle, bin/hagonoy-dual, plus selected generation-helper functions.
+
+### Confirmed findings
+
+- bin/hagonoy-dual-status counts Windows canonical TCP/UDP and staging TCP/UDP listeners, and probes the Ubuntu tmux/TCP/UDP state over SSH. However, canonical RUNNING/STOPPED classification uses only tmux-session presence plus Java TCP count; Bedrock UDP is printed but not enforced. It does not inspect generation manifests, ancestry/IDs, Java process owner/identity, or canonical process working directory.
+- bin/hagonoy-dual-windows-lifecycle checks Ubuntu's generation manifest is stopped, Ubuntu tmux is absent, and Ubuntu TCP/UDP listeners are absent before a Windows lifecycle operation. It explicitly starts/stops Windows with --host windows, verifies the Windows stopped manifest on stop, and then calls dual status. This is a host lifecycle guard, not a two-host active selector.
+- bin/hagonoy-dual has a backup preflight selector. Its Windows and Ubuntu state helpers are too lightweight for updater authority (session can classify as RUNNING without a full process/runtime/manifest proof).
+- bin/hagonoy-generation select() is for ignition/selection among STOPPED manifests. It fails if either manifest is not stopped; for two stopped manifests it uses generation numbers plus ancestry, and for equal IDs explicitly states byte-for-byte equality is not proven. It must not be reused to determine the currently active server.
+- verify_running_server_windows() confirms a unique TCP listener owner with Java executable and server.jar command line, Bedrock UDP, tmux session, canonical tmux pane path, and runtime versions. It does not independently confirm the Java process's own current working directory. verify_stopped_server() checks manifest state, tmux absence, and listener absence, but its Ubuntu branch checks TCP only; the Windows branch checks TCP and UDP.
+- Conclusion: updater active-host detection must be a new dedicated, read-only, fail-closed preflight. It must combine host reachability, manifest identity/state, generation evidence, tmux, Java process/listener identity, Bedrock UDP, and canonical process directory. It must require exactly one fully verified RUNNING host and one fully verified STOPPED host, and recheck before stop/replacement. Existing status and stopped-generation selection logic are insufficient.
+- This inspection does not change the confirmed result of the prior nine passing local tests; those tests do not cover this detector or the D: central cache.
+- No source patch, live server operation, JAR/plugin/world/datapack change, backup, or cleanup was performed in this inspection.
+
+### Next action
+
+Inspect the generation manifest loader and the full generic running-server verifier so the detector can reuse validated manifest schema and host-specific process checks rather than duplicating or weakening them. Then implement the detector and central-cache/host routing in one scoped patch and add dedicated tests.
