@@ -140,3 +140,12 @@ Next: apply the fixture correction from the central cache; run the URL regressio
   - Floodgate build 141 uses `/downloads/spigot`, not the artifact filename.
 - User then ran the six core/Paper suites as an `&&` chain. The first suite, `tests/dual-core-update-api-check.sh`, stopped with an embedded Python traceback `File "<stdin>", line 48, AssertionError`. Because of `&&`, no subsequent core plan/execution or Paper suites ran in that command. Exact assertion is unknown. Next: inspect the script around its embedded Python block and run `bash -x tests/dual-core-update-api-check.sh`; do not change production code until the failing expectation is identified.
 - Later cleanup is a distinct post-update phase requested by the user. Once the server update is complete and verified, inventory files outside the structured Windows/Ubuntu live server directories, including obsolete contents in `D:\Hagonoy-SMP\server-update-downloads`. Classify keep/archive/delete candidates, preserve required original source archives, current artifacts, recovery/rollback material until safe, and all canonical server/manager files. Do not perform automatic or premature deletion; obtain explicit approval for destructive cleanup.
+
+## Immediate test correction and timebox — 2026-11-13
+
+- The user-provided numbered test file establishes that the embedded Python traceback at `<stdin>, line 48` maps to shell file line 52 (Python begins at shell line 5).
+- The failing assertion is the old URL expectation `/1300/downloads/Geyser-Spigot.jar`; after the production fix, it must expect `/1300/downloads/spigot`.
+- This is a test-only expectation correction. Do not modify the production default-channel filter or build-selection logic to satisfy this failure.
+- After the guarded one-line correction, run compilation, the Geyser URL regression, and every core/Paper API, plan, and execution suite in one fail-continue batch; report all failures together rather than stopping at the first `&&` failure.
+- Schedule priority: user expects this maintenance/update work to finish within the two-day window. Batch work, avoid repeated rediscovery and unnecessary audits, and focus on the remaining concrete blockers: test baseline, central D: artifact cache, correct active-host detection/routing, live update, and health verification.
+- Do not execute the live update until the cache and host-routing requirements are actually met; do not represent those requirements as complete based on the current Ubuntu-specific plan.
