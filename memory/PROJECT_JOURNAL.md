@@ -147,3 +147,13 @@ These commits changed memory/documentation only. They did not push the user's lo
 - All nine focused updater/Paper/Geyser tests passed in the user's latest batch. They do not prove central cache or host-agnostic routing behavior.
 - No live server or server files were changed by this inspection. Do not run live update until both gaps are corrected and tested.
 - Next: inspect the exact current `bin/hagonoy` dispatcher and the AST-extracted relevant generation helper functions; then prepare a consolidated, scoped change.
+
+## 2026-11-13 — Dispatcher and helper expose exact host-routing defects
+
+- User supplied the WSL `bin/hagonoy` dispatcher and source for `verify_running_server`, `start_managed_server`, `stop_managed_server`, `verify_core_update_runtime`, `update_core_server`, and CLI/main in `bin/hagonoy-generation`.
+- The dispatcher routes regular `./hagonoy update --plan|--execute` to `bin/hagonoy-dual-lifecycle update`. A separate duplicate `update)` case later in that shell case is unreachable.
+- Existing generation code has Windows process verification, batch startup, and Windows listener checks in selected lifecycle functions; however, the combined core updater remains Ubuntu-only. It requires manifest host ubuntu, hard-codes Ubuntu in runtime verification, and omits host arguments in stop/start/rollback calls.
+- The coordinator checks that Windows has no tmux session/listeners and then always sends update to Ubuntu; it is not host-agnostic.
+- The core update downloads next to live JAR/plugin targets instead of using the central cache.
+- The ZIP omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`, which must be inspected before completing the single-source-of-truth host detector.
+- Nine core updater regression suites are passing. These tests do not cover central cache or active-host routing. No live server or server files were changed during this inspection.
