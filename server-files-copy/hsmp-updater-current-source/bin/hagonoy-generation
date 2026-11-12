@@ -2632,6 +2632,59 @@ def probe_managed_host(directory, host, session, port):
     }, sort_keys=True))
 
 
+def select_active_host_probes(ubuntu, windows):
+    """Select one RUNNING host only when the stopped peer is its proven ancestor."""
+    probes = {"ubuntu": ubuntu, "windows": windows}
+    for expected_host, probe in probes.items():
+        if not isinstance(probe, dict) or probe.get("host") != expected_host:
+            fail(f"Missing or mismatched {expected_host} host probe.")
+        if probe.get("state") not in ("running", "stopped"):
+            fail(f"{expected_host} host state is UNKNOWN; refusing to guess.")
+        generation = probe.get("generation")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            fail(f"{expected_host} generation number is invalid.")
+        if not isinstance(probe.get("generation_id"), str) or not probe["generation_id"]:
+            fail(f"{expected_host} generation ID is missing.")
+        ancestors = probe.get("ancestors")
+        if not isinstance(ancestors, list) or any(not isinstance(x, str) or not x for x in ancestors):
+            fail(f"{expected_host} generation ancestry is invalid.")
+        if len(ancestors) != generation - 1:
+            fail(f"{expected_host} generation ancestry length is inconsistent.")
+
+    running = [probe for probe in probes.values() if probe["state"] == "running"]
+    stopped = [probe for probe in probes.values() if probe["state"] == "stopped"]
+    if len(running) != 1 or len(stopped) != 1:
+        fail(
+            "Exactly one canonical host must be RUNNING and the other STOPPED; "
+            "both-running, both-stopped and UNKNOWN states are unsafe."
+        )
+    active, peer = running[0], stopped[0]
+    if active["generation"] == peer["generation"]:
+        if (
+            active["generation_id"] != peer["generation_id"]
+            or active["ancestors"] != peer["ancestors"]
+        ):
+            fail("Equal generation numbers have conflicting IDs or ancestry.")
+    elif active["generation"] > peer["generation"]:
+        peer_index = len(peer["ancestors"])
+        if (
+            active["generation_id"] in peer["ancestors"]
+            or active["ancestors"][:peer_index] != peer["ancestors"]
+            or peer_index >= len(active["ancestors"])
+            or active["ancestors"][peer_index] != peer["generation_id"]
+        ):
+            fail("RUNNING host does not prove descent from the STOPPED peer generation.")
+    else:
+        fail("STOPPED peer is newer than the RUNNING host; authority is ambiguous.")
+
+    return {
+        "active": active,
+        "peer": peer,
+        "active_host": active["host"],
+        "peer_host": peer["host"],
+    }
+
+
 def select(ubuntu, windows):
     paths = {"UBUNTU": Path(ubuntu), "WINDOWS": Path(windows)}
     existing = {k: p.is_dir() for k, p in paths.items()}
@@ -2754,6 +2807,10 @@ def main():
     s.add_argument("--session", default="mcserver")
     s.add_argument("--port", type=int, default=25565)
 
+    s = sub.add_parser("select-active-host")
+    s.add_argument("ubuntu_json")
+    s.add_argument("windows_json")
+
     s = sub.add_parser("select")
     s.add_argument("ubuntu_directory")
     s.add_argument("windows_directory")
@@ -2802,6 +2859,10 @@ def main():
         finish(args.directory)
     elif args.action == "probe-host":
         probe_managed_host(args.directory, args.host, args.session, args.port)
+    elif args.action == "select-active-host":
+        ubuntu_probe = json.loads(Path(args.ubuntu_json).read_text(encoding="utf-8"))
+        windows_probe = json.loads(Path(args.windows_json).read_text(encoding="utf-8"))
+        print(json.dumps(select_active_host_probes(ubuntu_probe, windows_probe), sort_keys=True))
     elif args.action == "cache-core-artifacts":
         components = [item for item in args.include.split(",") if item]
         populate_core_artifact_cache(
