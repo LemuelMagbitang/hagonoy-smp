@@ -267,3 +267,10 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - The extracted `bin/hagonoy-generation` is the large 95,553-byte revision; root/main helper is only 49,351 bytes and has a different Git blob SHA. Keep the extracted helper, not root/main.
 - Next minimum gap is the exact current WSL `bin/hagonoy` dispatcher. User can publish that one file into the extracted `bin/` folder or provide the full 16-file archive when able. Do not perform more broad source discovery.
 - No source patch, tests, fresh status/plan, or live server operation occurred in this inspection. No server artifacts/content were modified.
+
+## 2026-11-13 — Canonical source handoff folder and dispatcher staging
+
+- User clarified that requested project files should be uploaded to repository `server-files-copy/` or attached directly in chat. Treat this as the standard source-handoff path for future work.
+- User copied the exact current WSL `bin/hagonoy` into `server-files-copy/hsmp-updater-current-source/bin/hagonoy`, staged it, and displayed its staged diff as part of a commit/push command chain.
+- The terminal appeared to be inside Git's diff pager. User was advised to press `q`, which exits the pager and should allow the already-running `&&` chain to proceed to commit and push. Completion is pending actual command output.
+- No live server operations or server-file changes are involved in this source snapshot publication.
