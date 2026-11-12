@@ -81,7 +81,6 @@ with tempfile.TemporaryDirectory(prefix="hsmp-proc-scan-") as temporary:
     server = root / "canonical-server"
     other = root / "other-server"
     proc = root / "proc"
-    fake_java = root / "java"
     server.mkdir()
     other.mkdir()
     proc.mkdir()
