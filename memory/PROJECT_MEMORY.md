@@ -192,3 +192,11 @@ Source: user-provided WSL command output.
 - Required next edit is one guarded test-only string replacement in `tests/dual-core-update-api-check.sh`; then run all focused core/Paper tests in a fail-continue batch so every result is collected in one pass.
 - User explicitly requires the maintenance work to stay within a two-day update window. Avoid repeated discovery/audit loops and serial one-test-at-a-time cycles. Batch diagnostics and tests, fix concrete blockers only, then finish the live update and post-update health verification.
 - No live server, JAR, plugin, world, datapack, or backup was changed by this test failure.
+
+
+## Operational acceptance requirement reaffirmed — 2026-11-13
+
+- User requires the Minecraft server to return to a healthy, running state after every authorized maintenance/update operation. Server stop is allowed only when necessary for safe file replacement and should be limited to the required maintenance window.
+- Completion is not defined by a successful download or JAR replacement alone. The updater must start the same authoritative active host again, confirm runtime readiness, confirm actual Paper/Geyser/Floodgate versions, and perform meaningful health/connectivity checks. If start or verification fails, carry out the tested rollback/recovery path and continue attempting safe recovery until the prior or updated server is running and verified; report honestly if recovery cannot be established.
+- A successful update must leave one canonical host running and the other stopped, with active-host identity/generation and runtime state agreeing.
+- User supplied SHA-256 for the current WSL updater source bundle: `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`, path `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-updater-current-source.zip`. The ZIP bytes were not attached/available in this chat runtime, so its contents and hash have not been independently verified here. Do not claim inspection or patch preparation from the checksum alone.
