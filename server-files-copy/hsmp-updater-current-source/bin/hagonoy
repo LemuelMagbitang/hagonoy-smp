@@ -974,7 +974,7 @@ case "$command" in
         shift
         [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
             die "Usage: ./hagonoy update --plan|--execute"
-        exec "$PROJECT_DIR/bin/hagonoy-dual-lifecycle" update "$1"
+        exec bash "$PROJECT_DIR/bin/hagonoy-dual-core-update" "$1"
         ;;
     paper-check)
         [[ $# -eq 1 ]] || die "Usage: ./hagonoy paper-check"
