@@ -292,3 +292,13 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Recursive GitHub tree verification confirms 16 files exactly and expected path names. Original user branch and root/main manager source were not changed; only an isolated handoff copy branch was assembled.
 - This turn only verified/published source copies. No updater implementation patch or tests were run. No live server status/plan or server operation occurred.
 - Next is the consolidated implementation using this exact source snapshot; no more user source dumps/attachments should be requested. Preserve the user's current working branch and require explicit approval before applying/committing changes to active manager source paths.
+
+## 2026-11-13 — Complete source snapshot and nine-test CI baseline
+
+- After the user pushed dispatcher commit `dbef9edcb4e9dc4c8cbc71f43bceee5a958acad6`, created isolated `work/hsmp-updater-source-20261113` from main and assembled all 16 expected snapshot files under `server-files-copy/hsmp-updater-current-source/`.
+- Exact current WSL dispatcher copy was sourced from the user's feature branch handoff path, not root/main `bin/hagonoy`; extracted generation helper is the 95,553-byte version.
+- Added a dedicated branch-only GitHub Actions workflow at `.github/workflows/updater-snapshot-tests.yml` to execute the copied source's nine baseline checks.
+- Run `43274708710` on commit `1b29657d38dcec618e1f92a7f76f3e35858f7b91` completed successfully. Every step passed: compile, runtime probe, Geyser/Floodgate download key, core API/plan/execution, Paper API/plan/execution.
+- Root repository generic CI also passed on earlier snapshot copy commits, but does not exercise the copied updater tests; run `43274708710` is the relevant baseline.
+- This phase only copied sources and added test CI. No host-routing/cache patch, live status/plan, or actual update was performed. No Minecraft server, JAR, plugin, world, datapack, or backup changed.
+- Next: develop host-aware fail-closed detection, generation lineage comparison, host-specific lifecycle/recovery, central D: cache with Ubuntu transfer verification/Windows local deploy, and dedicated tests; preserve the existing passing baseline.
