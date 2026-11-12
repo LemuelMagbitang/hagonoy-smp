@@ -414,7 +414,7 @@ def verify_running_server(
         )
 
     udp_listeners = run_command([
-        "ss", "-H", "-lun", f"sport = :{bedrock_port}"
+        "ss", "-H", "-lunp", f"sport = :{bedrock_port}"
     ])
     udp_pids = set(re.findall(r"\bpid=(\d+)\b", udp_listeners))
     if udp_pids != {pid}:
