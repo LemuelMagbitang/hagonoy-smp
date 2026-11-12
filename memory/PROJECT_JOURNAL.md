@@ -177,3 +177,15 @@ User supplied the current WSL contents of bin/hagonoy-dual-status, bin/hagonoy-d
 ### Next action
 
 Inspect the generation manifest loader and the full generic running-server verifier so the detector can reuse validated manifest schema and host-specific process checks rather than duplicating or weakening them. Then implement the detector and central-cache/host routing in one scoped patch and add dedicated tests.
+
+
+## 2026-11-13 — Generation manifest loader and generic running verifier reviewed
+
+User supplied the WSL implementations of load() (lines 28–76) and verify_running_server() (lines 288–428).
+
+- load() verifies generation manifest schema_version == 1, allowed state (running/stopped), positive non-boolean generation integer, non-empty generation_id, valid unique ancestry, ancestry length exactly generation - 1, and correct parent_generation_id linkage. It does not validate host as part of the manifest schema loader.
+- The Ubuntu generic running verifier supports host dispatch, canonical server directory resolution, optional manifest-absence adoption check, strict tmux session name, canonical tmux pane directory verification, unique Java TCP listener PID, Java executable check, /proc PID cwd equality with canonical server directory, and Paper/Minecraft runtime discovery from logs or fresh console query.
+- For existing managed server updates, the default require_manifest_absent=True must not be mistakenly used as the normal running-state authorization check. The new active-host detector must validate the existing manifest separately and invoke appropriate running verification without weakening adoption protections.
+- The Windows branch delegates to verify_running_server_windows(). The earlier supplied body verifies Java listener ownership/process executable and server.jar command line, Bedrock UDP presence, tmux session and canonical pane path, and runtime versions; it does not independently read the Java process working directory. The existing stopped verifier's Ubuntu branch checks TCP only, whereas its Windows branch checks both TCP and UDP.
+- Design direction: preserve/reuse load() validation, then require explicit matching host/state/generation ID; strengthen UDP and Windows working-directory verification; fail closed unless exactly one host is fully RUNNING and the other fully STOPPED; recheck before stop/replacement.
+- No code was patched, no live server operation occurred, and no server files changed during this inspection. Existing nine focused tests remain the last confirmed local test batch; they do not exercise these additional requirements.
