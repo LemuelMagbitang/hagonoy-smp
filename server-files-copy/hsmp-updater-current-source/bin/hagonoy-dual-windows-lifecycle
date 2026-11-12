@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+
+die() { printf '[hagonoy-windows] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ -f "$CONFIG" && -f "$HELPER" ]] || die "Missing configuration or generation helper."
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?}"
+: "${WINDOWS_TMUX_SESSION:?}"
+: "${UBUNTU_SSH_TARGET:?}"
+: "${UBUNTU_SERVER_DIR:?}"
+: "${UBUNTU_TMUX_SESSION:?}"
+: "${MINECRAFT_PORT:?}"
+: "${BEDROCK_PORT:?}"
+
+[[ $# -eq 1 && ( "$1" == "start" || "$1" == "stop" ) ]] ||
+    die "Usage: ./hagonoy windows-start|windows-stop"
+
+ACTION="$1"
+
+for cmd in python3 tmux powershell.exe ssh flock; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing command: $cmd"
+done
+
+exec 9>/tmp/hagonoy-smp-windows-lifecycle.lock
+flock -n 9 || die "Another Windows lifecycle operation is active."
+
+SSH=(ssh -T -o BatchMode=yes -o ConnectTimeout=8)
+
+check_ubuntu_stopped() {
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" bash -s -- \
+        "$UBUNTU_SERVER_DIR" "$UBUNTU_TMUX_SESSION" \
+        "$MINECRAFT_PORT" "$BEDROCK_PORT" <<'REMOTE'
+set -euo pipefail
+dir="$1"
+session="$2"
+tcp_port="$3"
+udp_port="$4"
+
+manifest_state="$(python3 - "$dir/.hagonoy-generation.json" <<'PYMANIFEST'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f)["state"])
+PYMANIFEST
+)"
+
+session_present=0
+tmux has-session -t "=$session" 2>/dev/null && session_present=1 || true
+tcp_count="$(ss -H -ltn "sport = :$tcp_port" | wc -l)"
+udp_count="$(ss -H -lun "sport = :$udp_port" | wc -l)"
+
+if [[ "$manifest_state" == "stopped" &&
+      "$session_present" == 0 &&
+      "$tcp_count" == 0 &&
+      "$udp_count" == 0 ]]; then
+    echo UBUNTU=STOPPED
+else
+    echo "UBUNTU=NOT_STOPPED"
+    echo "MANIFEST=$manifest_state SESSION=$session_present TCP=$tcp_count UDP=$udp_count"
+    exit 1
+fi
+REMOTE
+}
+
+echo "========== WINDOWS CANONICAL ${ACTION^^} =========="
+echo "Ubuntu must remain STOPPED during Windows lifecycle operations."
+check_ubuntu_stopped
+
+if [[ "$ACTION" == "start" ]]; then
+    python3 "$HELPER" start-server "$WINDOWS_SERVER_DIR" \
+        --host windows \
+        --session "$WINDOWS_TMUX_SESSION" \
+        --port "$MINECRAFT_PORT" \
+        --ready-pattern "Done" \
+        --timeout 900
+
+    python3 "$HELPER" verify-running "$WINDOWS_SERVER_DIR" windows AUTO AUTO \
+        --session "$WINDOWS_TMUX_SESSION" \
+        --port "$MINECRAFT_PORT"
+
+    check_ubuntu_stopped
+    echo "WINDOWS_START=READY"
+else
+    python3 "$HELPER" stop-server "$WINDOWS_SERVER_DIR" \
+        --host windows \
+        --session "$WINDOWS_TMUX_SESSION" \
+        --port "$MINECRAFT_PORT" \
+        --timeout 180
+
+    python3 - "$WINDOWS_SERVER_DIR/.hagonoy-generation.json" <<'PYMANIFEST'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+if data.get("host") != "windows" or data.get("state") != "stopped":
+    raise SystemExit("Windows generation did not reach verified STOPPED state.")
+print(f"WINDOWS_GENERATION={data['generation']}")
+print(f"WINDOWS_GENERATION_ID={data['generation_id']}")
+print("WINDOWS_STATE=STOPPED")
+PYMANIFEST
+
+    check_ubuntu_stopped
+    echo "WINDOWS_STOP=CONFIRMED"
+fi
+
+"$ROOT/bin/hagonoy-dual-status"
