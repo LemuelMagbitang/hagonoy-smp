@@ -53,12 +53,22 @@ trap 'rm -rf -- "$TMP_DIR"' EXIT
 
 REMOTE_CACHE_DIR=""
 REMOTE_PEER_LOCK_PID=""
+REMOTE_PEER_LOCK_IN_FD=""
+REMOTE_PEER_LOCK_OUT_FD=""
 LOCAL_PEER_LOCK_FD=""
 
 cleanup() {
+    if [[ -n "$REMOTE_PEER_LOCK_IN_FD" ]]; then
+        eval "exec ${REMOTE_PEER_LOCK_IN_FD}>&-" || true
+        REMOTE_PEER_LOCK_IN_FD=""
+    fi
     if [[ -n "$REMOTE_PEER_LOCK_PID" ]]; then
-        kill "$REMOTE_PEER_LOCK_PID" >/dev/null 2>&1 || true
         wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+        REMOTE_PEER_LOCK_PID=""
+    fi
+    if [[ -n "$REMOTE_PEER_LOCK_OUT_FD" ]]; then
+        eval "exec ${REMOTE_PEER_LOCK_OUT_FD}<&-" || true
+        REMOTE_PEER_LOCK_OUT_FD=""
     fi
     if [[ -n "$LOCAL_PEER_LOCK_FD" ]]; then
         eval "exec ${LOCAL_PEER_LOCK_FD}>&-" || true
@@ -214,24 +224,27 @@ acquire_peer_lifecycle_lock() {
             die "Windows lifecycle is busy. The inactive host could not be reserved; no update was started."
         echo "INACTIVE_HOST_LOCK=WINDOWS_ACQUIRED"
     elif [[ "$PEER_HOST" == "ubuntu" ]]; then
-        local lock_log="$TMP_DIR/remote-peer-lock.log"
-        local remote_lock_command
-        remote_lock_command="flock -n /tmp/hagonoy-smp-lifecycle.lock -c 'printf \"LOCKED\\n\"; exec sleep 86400'"
-        "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_lock_command" >"$lock_log" 2>&1 &
-        REMOTE_PEER_LOCK_PID=$!
-        for _ in {1..20}; do
-            if grep -Fxq "LOCKED" "$lock_log"; then
-                echo "INACTIVE_HOST_LOCK=UBUNTU_ACQUIRED"
-                return 0
+        local remote_lock_command lock_line
+        remote_lock_command="exec 9>/tmp/hagonoy-smp-lifecycle.lock; flock -n 9 || exit 75; printf 'LOCKED\\n'; cat >/dev/null"
+        coproc HSMP_PEER_LOCK {
+            "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_lock_command"
+        }
+        REMOTE_PEER_LOCK_PID=$HSMP_PEER_LOCK_PID
+        REMOTE_PEER_LOCK_OUT_FD=${HSMP_PEER_LOCK[0]}
+        REMOTE_PEER_LOCK_IN_FD=${HSMP_PEER_LOCK[1]}
+        if ! IFS= read -r -t 8 -u "$REMOTE_PEER_LOCK_OUT_FD" lock_line ||
+            [[ "$lock_line" != "LOCKED" ]]; then
+            if [[ -n "$REMOTE_PEER_LOCK_IN_FD" ]]; then
+                eval "exec ${REMOTE_PEER_LOCK_IN_FD}>&-" || true
+                REMOTE_PEER_LOCK_IN_FD=""
             fi
-            if ! kill -0 "$REMOTE_PEER_LOCK_PID" 2>/dev/null; then
-                wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
-                REMOTE_PEER_LOCK_PID=""
-                die "Ubuntu lifecycle is busy or unreachable. The inactive host could not be reserved."
-            fi
-            sleep 0.25
-        done
-        die "Timed out while reserving Ubuntu lifecycle; no update was started."
+            wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+            REMOTE_PEER_LOCK_PID=""
+            die "Ubuntu lifecycle is busy or unreachable. The inactive host could not be reserved."
+        fi
+        eval "exec ${REMOTE_PEER_LOCK_OUT_FD}<&-"
+        REMOTE_PEER_LOCK_OUT_FD=""
+        echo "INACTIVE_HOST_LOCK=UBUNTU_ACQUIRED"
     else
         die "Unknown inactive host; cannot reserve lifecycle."
     fi
