@@ -136,3 +136,14 @@ These commits changed memory/documentation only. They did not push the user's lo
 - User supplied SHA-256 `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce` for `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-updater-current-source.zip`.
 - The actual ZIP bytes were not present in the current assistant runtime's `/mnt/data` and were not attached in the conversation. The supplied digest is noted but has not been independently verified; no source inspection or patching from that archive has occurred.
 - Next: attach the ZIP itself (or upload it into the conversation) so its digest and exact WSL source can be inspected. Then implement the central-cache and active-host routing requirements against those exact files in a consolidated pass, batch tests, run a read-only plan, and only then proceed to explicitly approved live update and post-update health verification.
+
+## 2026-11-13 — Verified source bundle inspected; central cache and host-routing gaps confirmed
+
+- User ran a read-only archive inspection in WSL and confirmed the ZIP SHA-256 matches the supplied value: `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`.
+- Archive file listing included `bin/hagonoy-dual-lifecycle`, `bin/hagonoy-generation`, `config/dual-host.conf`, tests, and only the root two-line `hagonoy` shim. It did not contain `bin/hagonoy`, which is the real command dispatcher. Therefore the complete update command route is not yet available for patching.
+- The printed `bin/hagonoy-dual-lifecycle` confirms it requires Ubuntu SSH settings, checks that Windows is stopped, and then unconditionally invokes the Ubuntu remote helper. It prints Ubuntu as the target and says Windows staging is excluded.
+- The printed `bin/hagonoy-generation` confirms `update_core_server()` requires the live generation host to be Ubuntu and hard-codes Ubuntu in runtime verification. Some lower-level start/stop/runtime functions have Windows support, but the combined update operation does not pass host through its full execution/rollback path.
+- The core update downloads into temporary staging files adjacent to the live server JAR/plugin JAR destinations. It does not first update the central artifact cache at `D:\\Hagonoy-SMP\\server-update-downloads` / `/mnt/d/Hagonoy-SMP/server-update-downloads`.
+- All nine focused updater/Paper/Geyser tests passed in the user's latest batch. They do not prove central cache or host-agnostic routing behavior.
+- No live server or server files were changed by this inspection. Do not run live update until both gaps are corrected and tested.
+- Next: inspect the exact current `bin/hagonoy` dispatcher and the AST-extracted relevant generation helper functions; then prepare a consolidated, scoped change.
