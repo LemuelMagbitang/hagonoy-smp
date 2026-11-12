@@ -270,3 +270,9 @@ The remote execute phase must refresh upstream metadata and require transferred 
 - plugin_needs_update() matches installed hashes against official default-channel build history and refuses downgrade or unidentified/custom artifacts.
 
 No code has yet implemented this coordinator handoff. Add dedicated offline/mock tests for cache reuse, failed checksum leaving old cache intact, atomic promotion, Ubuntu transfer and destination re-verification, Windows-local staging, metadata drift abort, and failure before server stop. Keep the existing combined transaction and rollback tests passing.
+
+## Source-bundle handoff checkpoint — 2026-11-13
+
+The user reports creating `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip` in WSL with 16 files and SHA-256 `bfd49c91244869bab4ce0d48fe3a1d57fbba0fd89aad9a0d1dbc125fa10e5944`.
+
+The archive is not attached to the active conversation and is not accessible to the assistant runtime solely from the user's WSL path. The digest is user-reported and has not been independently verified. Treat this as created-but-not-yet-received. Next step is attach the ZIP, verify its hash and file manifest, then make the consolidated source patch against the exact files. No fresh tests/plan or live update has occurred at this checkpoint.
