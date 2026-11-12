@@ -126,3 +126,13 @@ These commits changed memory/documentation only. They did not push the user's lo
 - The live update remains incomplete. Previous real execution downloaded and verified Paper 249 but failed on Geyser HTTP 404 before shutdown/replacement/restart. No new live readback has been supplied.
 - Next work is a focused implementation pass for the user's required central cache (`D:\\Hagonoy-SMP\\server-update-downloads`) and automatic Ubuntu/Windows active-host routing. Then batch tests, fresh plan, explicitly approved live update, and live health verification.
 - User reaffirmed the two-day completion target and requested fewer loops and faster execution. Do not repeat broad discovery or serial test cycles; do not bypass the central cache, verified host detection, artifact validation, or rollback safety.
+
+
+## 2026-11-13 — Server-running acceptance criterion reaffirmed; source bundle pending attachment
+
+- User emphasized that all Minecraft server changes/updates must preserve a healthy operational server. The server may be stopped only when required for safe maintenance and must be running again afterward so that functionality can be tested.
+- Acceptance criterion recorded: preflight, release discovery, downloads, checksum/integrity/compatibility verification, and remote staging happen while the server remains online. Only then stop gracefully, apply the verified managed artifacts, restart the same positively identified host, verify Paper/Geyser/Floodgate runtime versions and readiness/connectivity, and rollback/restart the original set if verification fails.
+- A successful maintenance run must leave exactly one canonical host running and the other stopped. Do not report completion after JAR replacement alone. Never force-kill Java as a routine step or accept a stopped server as success.
+- User supplied SHA-256 `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce` for `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-updater-current-source.zip`.
+- The actual ZIP bytes were not present in the current assistant runtime's `/mnt/data` and were not attached in the conversation. The supplied digest is noted but has not been independently verified; no source inspection or patching from that archive has occurred.
+- Next: attach the ZIP itself (or upload it into the conversation) so its digest and exact WSL source can be inspected. Then implement the central-cache and active-host routing requirements against those exact files in a consolidated pass, batch tests, run a read-only plan, and only then proceed to explicitly approved live update and post-update health verification.
