@@ -240,3 +240,11 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Refreshed metadata must still match the artifact hashes/builds on the destination before shutdown; a metadata change between plan and execution must abort safely. No partial/invalid download should replace the previously verified cache object.
 - This was source inspection/design only. No patch was generated/applied, no tests beyond the previous nine were run, and no live server/JAR/plugin/world/datapack/backup changed.
 - Next: implement the metadata/cache/transfer coordinator and host-aware lifecycle/rollback paths together, add tests for both host routes and cache failure cases, then run one batch and a fresh read-only plan. Do not repeat source audits already completed.
+
+## 2026-11-13 — Current source ZIP created in WSL; awaiting attachment
+
+- User supplied terminal output showing `hsmp-core-updater-source-20261113.zip` created under `/mnt/d/Hagonoy-SMP/server-update-downloads` with 16 files.
+- User-reported SHA-256: `bfd49c91244869bab4ce0d48fe3a1d57fbba0fd89aad9a0d1dbc125fa10e5944`.
+- The ZIP bytes were not attached in the chat and are not present in the assistant runtime based only on this path. No independent checksum verification or archive inspection has occurred.
+- The current work phase is source handoff before consolidated patch implementation. Required design inspections are complete; previous nine updater/Paper/Geyser checks are the last confirmed test baseline. No patch, fresh plan, or live update has been performed from this bundle.
+- Next: attach the ZIP, verify digest and file list, patch host selection/cache transport/lifecycle/rollback together, batch tests, then make a read-only plan. Request explicit live-update authorization only after all gates pass.
