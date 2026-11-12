@@ -165,3 +165,13 @@ Next: apply the fixture correction from the central cache; run the URL regressio
 - Never force-kill Java or leave the canonical server stopped as a normal terminal result. If automated recovery cannot restore service, report the precise failed recovery step and provide the safest immediate recovery action; do not claim the server is healthy.
 - The inactive host must remain stopped throughout the update; exactly one canonical host should be running after successful completion.
 - The user provided the current-source ZIP's local SHA-256 as `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`. The archive itself was not attached to the assistant's runtime as of this checkpoint; verify the uploaded archive's hash before inspection or patching.
+
+## Source implementation findings — central cache and host routing gaps
+
+- The user-provided source archive checksum was verified by the user's own WSL script: `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`.
+- The printed archive manifest omitted `bin/hagonoy` (the actual dispatcher); it contained only the top-level `hagonoy` shim. Obtain that dispatcher and the relevant Windows lifecycle/update helper functions before final patch construction.
+- Source inspection confirms current `bin/hagonoy-dual-lifecycle` is Ubuntu-only: requires SSH config, checks that Windows is stopped, then targets Ubuntu unconditionally. The output says Windows staging is excluded.
+- The current generation helper's combined `update_core_server` is also Ubuntu-only: it requires a RUNNING Ubuntu generation and hard-codes Ubuntu in runtime verification. Although separate start/stop/runtime helper functions have some Windows branches, the combined core-update flow does not yet thread a host parameter through every stage.
+- Core updater downloads directly to temporary files adjacent to live server JAR/plugin JAR destinations. It does not populate/atomically refresh the designated D: central artifact cache. This requires a coordinator change: obtain and verify artifacts in the central cache first, transfer/re-verify on Ubuntu when selected, or use the local mounted Windows server path when Windows is selected; then run the host-specific transaction.
+- The nine targeted unit/regression suites passed, but they do not test either of these architectural requirements. Keep these gaps explicit; do not attempt a live update until addressed.
+- The source bundle did not include the dispatcher, so next inspect `bin/hagonoy` plus exact generation helper function bodies before editing.
