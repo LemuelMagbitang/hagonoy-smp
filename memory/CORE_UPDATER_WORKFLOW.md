@@ -280,3 +280,11 @@ The archive is not attached to the active conversation and is not accessible to 
 ## Source archive availability — 2026-11-13
 
 The user requested accelerated, smarter implementation with the server's health prioritized. A runtime filesystem check confirmed the expected ZIP is not accessible at either the WSL D: mount path `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip` or `/mnt/data/hsmp-core-updater-source-20261113.zip`; no attachments are currently mounted in `/mnt/data`. The user's reported local SHA-256 remains unverified by the assistant. Do not patch reconstructed excerpts or substitute GitHub main for the current WSL checkout. Await the ZIP attachment, then verify and patch the exact source. No source changes, tests, or live server operations occurred in this check.
+
+## Repository snapshot inspection — 2026-11-13
+
+The user-provided GitHub `server-files-copy` location is accessible. Its extracted source folder has 12 rather than the expected 16 files. It includes the dual lifecycle wrapper, 95,553-byte current generation helper, dual-host config, root shim, and eight regression tests. The three dual status/preflight/Windows lifecycle support scripts are available at repository root/main and match previously reviewed user-supplied source. The exact WSL `bin/hagonoy` dispatcher is absent from the extracted snapshot.
+
+Do not substitute root/main `bin/hagonoy`: that file is an older 45,561-byte router whose regular `update --plan` invokes addon inventory and whose `update` execution path explicitly reports full update unimplemented. This conflicts with the user's previously inspected current WSL dispatcher, which routes full update through dual lifecycle. Also do not substitute root/main `bin/hagonoy-generation` (49,351 bytes) for the 95,553-byte extracted helper.
+
+Next minimum input: add the current WSL `bin/hagonoy` to `server-files-copy/hsmp-updater-current-source/bin/hagonoy` or upload the exact 16-file archive. Then proceed directly to consolidated patch preparation. No server changes or fresh plan occurred during this inspection.
