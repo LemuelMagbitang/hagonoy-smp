@@ -298,3 +298,11 @@ User supplied the exact current WSL implementations of Paper/Geyser metadata dis
 - Current phase: exact-source handoff, immediately before creating the consolidated updater patch. All required design findings are complete: existing transaction/rollback, host-specific lifecycle gaps, active-host evidence gaps, official artifact checks, and Windows/Ubuntu cache-transfer topology.
 - Last confirmed tests are the nine focused baseline suites recorded above. No new tests have been run against this source ZIP, no consolidated patch exists yet, no fresh update plan has been run, and no live update has been performed.
 - Next: user attaches the ZIP in this chat; verify the exact SHA-256 and inspect the archive files; create one consolidated host-routing/cache/rollback patch; batch existing and new tests; run a fresh read-only plan. Live execution remains a separate explicit-authorization step after the plan passes.
+
+## Source archive availability check — 2026-11-13
+
+- User asked to continue quickly and intelligently, with server health as the overriding acceptance criterion.
+- Assistant checked the active runtime for `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip` and `/mnt/data/hsmp-core-updater-source-20261113.zip`; neither path exists in this session, and `/mnt/data` contains no uploaded files. Therefore the user-created WSL archive is still not attached/materialized here and cannot be independently verified or edited.
+- Do not fabricate a patch from pasted excerpts or use GitHub default-branch code as a substitute for the current local WSL source. The current local branch/source may contain unpushed changes.
+- No updater code, tests, live server process, JAR/plugin/world/datapack, or backup was changed in this turn. No fresh live status check is available.
+- Next required input: attach the exact source ZIP to the chat. Then verify SHA-256 and archive manifest, prepare one coordinated patch, batch static/unit/host-route/cache/rollback tests, and run a fresh read-only plan. Keep all live actions gated by explicit authorization and successful preflight; never force-kill Java or sacrifice rollback/health verification for speed.
