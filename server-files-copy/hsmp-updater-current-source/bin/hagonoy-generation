@@ -1281,7 +1281,7 @@ def mark_failed_start_stopped(directory, session, port, expected_generation_id, 
             fail("Windows Minecraft TCP, Bedrock UDP, or Java server process remains active.")
     elif host == "ubuntu":
         listeners = run_command(["ss", "-H", "-ltn", f"sport = :{port}"])
-        udp_listeners = run_command(["ss", "-H", "-lun", f"sport = :{bedrock_port}])
+        udp_listeners = run_command(["ss", "-H", "-lun", f"sport = :{bedrock_port}"])
         java_pids = java_processes_in_directory(directory)
         if listeners.strip() or udp_listeners.strip() or java_pids:
             fail(
