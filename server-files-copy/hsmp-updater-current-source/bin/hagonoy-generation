@@ -228,8 +228,11 @@ $expected = [IO.Path]::GetFullPath('{windows_directory}')
 $t = @(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue)
 $u = @(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue)
 $ids = @($t | Select-Object -ExpandProperty OwningProcess -Unique)
+$udpIds = @($u | Select-Object -ExpandProperty OwningProcess -Unique)
 $j = 0
 $cwd = 0
+$udpJava = 0
+if ($ids.Count -eq 1 -and $udpIds.Count -eq 1 -and $ids[0] -eq $udpIds[0]) {{ $udpJava = 1 }}
 if ($ids.Count -eq 1) {{
   $serverPid = [int]$ids[0]
   $p = Get-CimInstance Win32_Process -Filter "ProcessId = $serverPid"
@@ -251,6 +254,7 @@ if ($ids.Count -eq 1) {{
 "PIDS=$($ids.Count)"
 "JAVA=$j"
 "CWD=$cwd"
+"UDPJAVA=$udpJava"
 """
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -269,7 +273,8 @@ if ($ids.Count -eq 1) {{
         fail("Windows process verification returned incomplete data.")
 
     if (tcp < 1 or udp < 1 or pids != 1
-            or values.get("JAVA") != "1" or values.get("CWD") != "1"):
+            or values.get("JAVA") != "1" or values.get("CWD") != "1"
+            or values.get("UDPJAVA") != "1"):
         fail("Windows Java process, canonical working directory, or Bedrock listener could not be verified.")
 
     run_command(["tmux", "has-session", "-t", f"={session}"])
@@ -594,6 +599,28 @@ def validate_lifecycle_args(directory, session, port, timeout):
     return directory
 
 
+def java_processes_in_directory(directory, proc_root="/proc"):
+    """Return Java PIDs whose real process working directory is the server directory."""
+    directory = Path(directory).resolve(strict=True)
+    matches = []
+    for process in Path(proc_root).glob("[0-9]*"):
+        if not process.name.isdigit():
+            continue
+        try:
+            executable = Path(os.readlink(process / "exe")).name.removesuffix(" (deleted)")
+            working_directory = Path(os.readlink(process / "cwd")).resolve(strict=True)
+        except FileNotFoundError:
+            # The process exited while /proc was being enumerated.
+            continue
+        except PermissionError as exc:
+            fail(f"Cannot verify process {process.name} while proving the server is stopped: {exc}")
+        except OSError:
+            continue
+        if executable == "java" and working_directory == directory:
+            matches.append(process.name)
+    return sorted(set(matches))
+
+
 def verify_stopped_server(directory, session, port, host="ubuntu"):
     directory = Path(directory).resolve(strict=True)
     data = load(directory)
@@ -619,7 +646,8 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
             "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
-            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)\\\\javaw?\\\\.exe$' -and $_.CommandLine -match '(?i)server\\\\.jar' }).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_SERVER_PROCESSES='+$j"
         )
         try:
             result = subprocess.run(
@@ -639,11 +667,12 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
         try:
             tcp_count = int(values["TCP_COUNT"])
             udp_count = int(values["UDP_COUNT"])
+            java_server_processes = int(values["JAVA_SERVER_PROCESSES"])
         except (KeyError, ValueError):
-            fail("Windows listener check returned incomplete data.")
+            fail("Windows listener/process check returned incomplete data.")
 
-        if tcp_count or udp_count:
-            fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
+        if tcp_count or udp_count or java_server_processes:
+            fail("Windows Minecraft TCP, Bedrock UDP, or Java server process remains active.")
         return data
 
     if host != "ubuntu":
@@ -657,6 +686,12 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
     ])
     if listeners.strip() or udp_listeners.strip():
         fail("Minecraft TCP or Bedrock UDP listener remains active.")
+    java_pids = java_processes_in_directory(directory)
+    if java_pids:
+        fail(
+            "A Java process is still running from the canonical Minecraft directory: "
+            + ", ".join(java_pids)
+        )
 
     return data
 
