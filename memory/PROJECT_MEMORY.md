@@ -240,3 +240,14 @@ User supplied the remaining WSL dual-host scripts and selected generation-helper
 - Do not use existing status output or the stopped-generation selector as sufficient authority evidence. The core updater still must be threaded with the selected host and D: cache end-to-end.
 
 The previously passing nine local regression tests remain confirmed; they do not cover this detector or central-cache integration. No live operation or server-file change occurred during this inspection.
+
+
+## Manifest and runtime-verifier inspection — 2026-11-13
+
+User supplied the complete load() and generic verify_running_server() implementations from the WSL checkout.
+
+- load() validates schema version 1; state is running/stopped; generation is a positive integer; generation_id and ancestry are valid; ancestry length equals generation minus one; and parent_generation_id matches the last ancestor (or is null for generation 1). It currently does not validate a host value as part of this loader.
+- The Ubuntu branch of verify_running_server() already verifies canonical directory existence, tmux session and pane paths, unique Java TCP listener PID, executable name, Java process cwd equal to the canonical server directory, and live Paper/Minecraft version readback. Its default require_manifest_absent=True is for adoption; an update preflight of an existing managed server must explicitly preserve/validate its manifest rather than mistake this default for a host selector.
+- The Windows branch delegates to verify_running_server_windows(); prior printed code confirmed Java owner/process command-line, Bedrock UDP presence, tmux pane path and runtime readback, but did not independently verify the Java process's own current directory against the canonical server directory.
+- Remaining design requirements: require manifest host/state to agree with process evidence; require Bedrock UDP to be a validated part of RUNNING and STOPPED state on both hosts; add equivalent canonical-process-directory verification on Windows; prove exactly one host RUNNING and the other STOPPED; bind and recheck host/generation identity before stop and replacement. Existing loader validation is reusable rather than duplicated.
+- No source patch, live server operation, or server-file modification occurred in this inspection. The nine previous tests remain confirmed but do not cover these gaps.
