@@ -327,3 +327,15 @@ The isolated updater branch is a review/test workspace, not yet a production upd
 A fresh `./hagonoy update --plan` must be read-only and clearly report the detected host, generation, central cache path and exact deployment/staging destinations. Only after the user separately authorizes execution may the updater gracefully stop that same host, replace the managed set, restart, and verify Paper/Minecraft 26.3, currently installed managed plugin versions, readiness and Java TCP/Bedrock UDP; the inactive peer must remain stopped. Any failure must restore the complete original managed-JAR set and verify recovery. No automatic full backup; unrelated plugins, worlds, configs and datapacks remain outside scope.
 
 This roadmap is the current actionable order; it supersedes the earlier source-handoff/attachment blocker. The complete snapshot is already present in the isolated GitHub branch and the nine-test CI baseline passed. No implementation or live operation was performed while recording this plan.
+
+
+## 2026-11-13 implementation status — integrated, CI-green, awaiting review
+
+The earlier isolated-source roadmap has now been implemented in a clean integration branch from current `main` and moved into the real manager paths.
+
+- Branch: `work/hsmp-updater-final-20261113` (14 ahead, 0 behind the current main base at branch creation).
+- Draft PR #4: https://github.com/LemuelMagbitang/hagonoy-smp/pull/4. Keep it separate from PR #2. PR is mergeable/clean but intentionally unmerged.
+- Root production changes: `bin/hagonoy` routes `update --plan|--execute` through `bin/hagonoy-dual-core-update`; `bin/hagonoy-generation` now supports host-aware lifecycle/update/cache/probe/lineage actions; `bin/hagonoy-dual-lifecycle` invokes the core updater on its existing Ubuntu-only route; the new two-host coordinator selects the active host and manages cache staging/locks/rechecks.
+- Tests now live in root `tests/` and are called from `tests/syntax-check.sh`. Coverage includes runtime/version and Geyser/Floodgate metadata, cache hit/miss/corrupt-cache/atomic promotion, active-host lineage ambiguity, Windows route and stale generation refusal, core API/plan/combined success/rollback, and Paper updater/rollback regressions.
+- PR manager checks `43318480670` and PR shell tests `43318480563` passed at head `ec0172d9e82824b9a318c63295c0ca7017c7658b`.
+- No live server command has been run. The user reports the server remains running and accepting players. The next live-specific phase is still separate: fresh `./hagonoy update --plan`, inspect the detected host and target set, then require explicit execution authorization. No automatic full backup.
