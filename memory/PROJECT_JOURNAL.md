@@ -74,3 +74,13 @@ The following memory-only documentation changes were written to the repository's
 - Updated `memory/DATAPACK_WORKFLOW.md` to mark datapack work as a separate, currently deferred workstream while preserving its confirmed deployment history (commit `50f5efea6272e7e3036b136f1b108cc27268a73e`).
 
 These commits changed memory/documentation only. They did not push the user's local WSL source patch, alter either live server, deploy any artifact, change a datapack, or create a backup.
+
+
+## 2026-11-13 — Geyser download-key regression test fixture diagnosis
+
+- User supplied a traceback where dual-geyser-download-key-check.py expected build 1302 but received URL for build 1802.
+- Inspection of the exact patch bundle showed the regression test replaced fetch_geysermc_default_builds() with a fake that returned both default build 1302 and experimental build 1802. The real helper contract returns default-channel builds only; the production selection routine's max() therefore selected the highest supplied entry as designed.
+- Diagnosis: invalid test fixture/mocking boundary, not proof of a production channel-filter defect. Existing dual-core-update-api-check.sh is responsible for testing experimental-channel filtering in the real helper.
+- Prepared hsmp-geyser-test-fixture-fix.zip, a test-only correction removing the experimental entry from that mock. The apply script was tested on a temporary copy and Python compilation succeeded. Not yet applied to the user's WSL checkout, and the actual test has not yet passed.
+- No production code, live server, JAR, plugin, world, datapack, or backup was changed by this diagnostic patch preparation.
+- Immediate next step: user downloads the test-only patch to D:\Hagonoy-SMP\server-update-downloads, applies from WSL, and reruns the new test plus existing focused updater/Paper suites.
