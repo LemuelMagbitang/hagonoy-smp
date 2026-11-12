@@ -302,3 +302,14 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Root repository generic CI also passed on earlier snapshot copy commits, but does not exercise the copied updater tests; run `43274708710` is the relevant baseline.
 - This phase only copied sources and added test CI. No host-routing/cache patch, live status/plan, or actual update was performed. No Minecraft server, JAR, plugin, world, datapack, or backup changed.
 - Next: develop host-aware fail-closed detection, generation lineage comparison, host-specific lifecycle/recovery, central D: cache with Ubuntu transfer verification/Windows local deploy, and dedicated tests; preserve the existing passing baseline.
+
+
+## 2026-11-13 — Updater branch completion plan confirmed
+
+- User confirmed the push of `fix/border-console-pane-and-parser-20261111`; upstream tracking is now set. This is publication only, not a PR or merge. Keep this border/parser branch separate from updater implementation.
+- Rechecked GitHub: `work/hsmp-updater-source-20261113` remains 6 commits ahead and 6 behind current `main` (diverged). Do not open its PR yet or merge either branch. Reconcile the updater branch with main after the consolidated patch is implemented and its tests pass.
+- PR #2 is still the separate open backup/world-border/addon workflow PR; do not fold the core updater change into it.
+- Confirmed baseline: exact 16-file updater snapshot under `server-files-copy/hsmp-updater-current-source/`; dedicated CI workflow run `43274708710` passed the existing nine focused checks.
+- Completion sequence: fail-closed active-host detector; host-aware generation/lifecycle/runtime/update/rollback paths; central D: artifact cache plus Windows-local and Ubuntu-transfer deployments with destination re-verification; then batched two-host/failure-path regression tests while retaining all existing tests.
+- Final gates: fresh read-only plan must show the correctly detected host, generation and cache/deploy destinations; explicit separate authorization before any live execution; graceful transaction and same-host readiness/runtime verification; inactive peer stays stopped. Do not automatically create a full backup or touch unrelated plugins, datapacks, worlds or config.
+- No code changes, commits, PRs, live operation or server data changes were made as part of this planning response.
