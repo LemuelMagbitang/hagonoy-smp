@@ -28,6 +28,9 @@ jobs:
       - name: Geyser and Floodgate download-key regression
         working-directory: server-files-copy/hsmp-updater-current-source
         run: python3 tests/dual-geyser-download-key-check.py
+      - name: Core updater central artifact cache tests
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: python3 tests/dual-core-update-cache-check.py
       - name: Core updater API, plan, and transaction tests
         working-directory: server-files-copy/hsmp-updater-current-source
         run: |
