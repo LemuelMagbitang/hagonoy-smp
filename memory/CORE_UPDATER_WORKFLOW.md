@@ -296,3 +296,11 @@ For requested project-file uploads, the user designated repository `server-files
 ## Dispatcher snapshot publication status — 2026-11-13
 
 The current WSL dispatcher was copied to `server-files-copy/hsmp-updater-current-source/bin/hagonoy` and committed locally as `dbef9ed` on branch `fix/border-console-pane-and-parser-20261111`. The commit succeeded; `git push` failed only because no upstream branch was configured. Run `git push --set-upstream origin fix/border-console-pane-and-parser-20261111`, then verify the path on that branch. Do not repeat the commit or treat the file as published before the push succeeds.
+
+## Complete source snapshot assembled — 2026-11-13
+
+User's push of dispatcher copy succeeded: commit `dbef9edcb4e9dc4c8cbc71f43bceee5a958acad6` on `fix/border-console-pane-and-parser-20261111`. That branch carries only the dispatcher copy under the handoff folder; 15 other source files are available across main extracted/root paths.
+
+An isolated branch `work/hsmp-updater-source-20261113` was created from main to assemble the coherent 16-file source set under `server-files-copy/hsmp-updater-current-source/`. This uses 12 extracted files from main, three dual-host helper copies from main root, and the exact WSL dispatcher snapshot copied from the user's feature branch. The initial root dispatcher copy was identified as a different older blob and corrected to exact copied blob `596feac642ad7e73b25500d297e1e880c1c26938` (48,686 bytes). Recursive tree verification confirms 16 expected files, no missing/unexpected files. Original main/root source and user's feature branch root files are not changed; only handoff copies exist on the isolated review branch.
+
+Use this complete snapshot for patch construction. The extracted generation helper is 95,553 bytes; do not substitute root/main's 49KB helper. No tests or live update were run in this assembly turn. Keep implementation changes out of the active manager source until the patch is reviewed and user authorizes application/commit.
