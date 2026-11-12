@@ -276,3 +276,7 @@ No code has yet implemented this coordinator handoff. Add dedicated offline/mock
 The user reports creating `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip` in WSL with 16 files and SHA-256 `bfd49c91244869bab4ce0d48fe3a1d57fbba0fd89aad9a0d1dbc125fa10e5944`.
 
 The archive is not attached to the active conversation and is not accessible to the assistant runtime solely from the user's WSL path. The digest is user-reported and has not been independently verified. Treat this as created-but-not-yet-received. Next step is attach the ZIP, verify its hash and file manifest, then make the consolidated source patch against the exact files. No fresh tests/plan or live update has occurred at this checkpoint.
+
+## Source archive availability — 2026-11-13
+
+The user requested accelerated, smarter implementation with the server's health prioritized. A runtime filesystem check confirmed the expected ZIP is not accessible at either the WSL D: mount path `/mnt/d/Hagonoy-SMP/server-update-downloads/hsmp-core-updater-source-20261113.zip` or `/mnt/data/hsmp-core-updater-source-20261113.zip`; no attachments are currently mounted in `/mnt/data`. The user's reported local SHA-256 remains unverified by the assistant. Do not patch reconstructed excerpts or substitute GitHub main for the current WSL checkout. Await the ZIP attachment, then verify and patch the exact source. No source changes, tests, or live server operations occurred in this check.
