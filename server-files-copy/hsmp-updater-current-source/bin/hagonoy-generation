@@ -216,20 +216,41 @@ def verify_running_server_windows(directory, paper, minecraft, session, port):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
         fail("Invalid Windows tmux session.")
 
+    try:
+        windows_directory = run_command(["wslpath", "-w", str(directory)])
+    except RuntimeError as exc:
+        fail(f"Cannot translate Windows canonical directory for process verification: {exc}")
+    windows_directory = windows_directory.replace("'", "''")
+
     ps = f"""
 $ErrorActionPreference = 'Stop'
+$expected = [IO.Path]::GetFullPath('{windows_directory}')
 $t = @(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue)
 $u = @(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue)
 $ids = @($t | Select-Object -ExpandProperty OwningProcess -Unique)
 $j = 0
+$cwd = 0
 if ($ids.Count -eq 1) {{
-  $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($ids[0])"
-  if ($p -and ([IO.Path]::GetFileName($p.ExecutablePath) -match '^(?i:javaw?)\\.exe$') -and ($p.CommandLine -match '(?i)server\\.jar')) {{ $j = 1 }}
+  $serverPid = [int]$ids[0]
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId = $serverPid"
+  if ($p -and ([IO.Path]::GetFileName($p.ExecutablePath) -match '^(?i:javaw?)\\.exe$') -and ($p.CommandLine -match '(?i)server\\.jar')) {{
+    $j = 1
+    $jcmd = Join-Path (Split-Path -Parent $p.ExecutablePath) 'jcmd.exe'
+    if (Test-Path -LiteralPath $jcmd) {{
+      $props = & $jcmd $serverPid VM.system_properties 2>$null
+      $userDirLine = $props | Where-Object {{ $_ -match '^user\\.dir=' }} | Select-Object -First 1
+      if ($userDirLine) {{
+        $actual = [IO.Path]::GetFullPath($userDirLine.Substring(9))
+        if ($actual.TrimEnd('\\') -ieq $expected.TrimEnd('\\')) {{ $cwd = 1 }}
+      }}
+    }}
+  }}
 }}
 "TCP=$($t.Count)"
 "UDP=$($u.Count)"
 "PIDS=$($ids.Count)"
 "JAVA=$j"
+"CWD=$cwd"
 """
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -247,8 +268,9 @@ if ($ids.Count -eq 1) {{
     except (KeyError, ValueError):
         fail("Windows process verification returned incomplete data.")
 
-    if tcp < 1 or udp < 1 or pids != 1 or values.get("JAVA") != "1":
-        fail("Windows Java server or Bedrock listener could not be verified.")
+    if (tcp < 1 or udp < 1 or pids != 1
+            or values.get("JAVA") != "1" or values.get("CWD") != "1"):
+        fail("Windows Java process, canonical working directory, or Bedrock listener could not be verified.")
 
     run_command(["tmux", "has-session", "-t", f"={session}"])
     panes = run_command([
@@ -1166,37 +1188,58 @@ def sync_directory(directory):
         os.close(descriptor)
 
 
-def mark_failed_start_stopped(directory, session, port, expected_generation_id):
+def mark_failed_start_stopped(directory, session, port, expected_generation_id, host="ubuntu"):
+    directory = Path(directory).resolve(strict=True)
+    data = load(directory)
+    if data is None or data.get("host") != host:
+        fail("Generation manifest host does not match failed-start recovery host.")
+    if data.get("state") != "running" or data.get("generation_id") != expected_generation_id:
+        fail("Generation metadata changed; failed-start reconciliation is unsafe.")
+
     session_result = probe_command([
         "tmux", "has-session", "-t", f"={session}"
     ])
-
     if session_result.returncode != 1:
         fail(
             "Cannot prove the failed update process has stopped. "
             "Rollback is unsafe; inspect the server manually."
         )
 
-    listeners = run_command([
-        "ss", "-H", "-ltn", f"sport = :{port}"
-    ])
-
-    if listeners.strip():
-        fail(
-            "Minecraft still owns its listening port. "
-            "Rollback is unsafe; the process was not killed."
+    if host == "windows":
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
+            "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
         )
-
-    data = load(directory)
-    if (
-        data is None
-        or data["state"] != "running"
-        or data["generation_id"] != expected_generation_id
-    ):
-        fail("Generation metadata changed; failed-start reconciliation is unsafe.")
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            fail("Windows failed-start listener check failed: " + result.stderr.strip())
+        values = dict(
+            line.strip().split("=", 1)
+            for line in result.stdout.splitlines() if "=" in line
+        )
+        try:
+            tcp_count, udp_count = int(values["TCP_COUNT"]), int(values["UDP_COUNT"])
+        except (KeyError, ValueError):
+            fail("Windows failed-start listener check returned incomplete data.")
+        if tcp_count or udp_count:
+            fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
+    elif host == "ubuntu":
+        listeners = run_command(["ss", "-H", "-ltn", f"sport = :{port}"])
+        udp_listeners = run_command(["ss", "-H", "-lun", "sport = :19132"])
+        if listeners.strip() or udp_listeners.strip():
+            fail(
+                "Minecraft TCP or Bedrock UDP listener remains active. "
+                "Rollback is unsafe; the process was not killed."
+            )
+    else:
+        fail(f"Unsupported failed-start recovery host: {host}")
 
     finish(directory)
-
 
 
 def sha256_file(path):
@@ -2031,7 +2074,7 @@ def update_core_server(
                 try:
                     mark_failed_start_stopped(
                         directory, session, port,
-                        failed_generation["generation_id"]
+                        failed_generation["generation_id"], host=host
                     )
                 except Exception as stop_error:
                     keep_transaction = True
