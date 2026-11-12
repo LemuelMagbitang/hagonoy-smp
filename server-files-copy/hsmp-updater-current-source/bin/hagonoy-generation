@@ -1788,7 +1788,7 @@ def populate_core_artifact_cache(cache_directory, minecraft_version, components,
         fail("Invalid Minecraft version for central artifact cache.")
     requested = set(components)
     if not requested or not requested.issubset({"paper", "geyser", "floodgate"}):
-        fail("Cache request must name Paper and/or already-installed Geyser/Floodgate components.")
+        fail("Only Paper and already-installed managed Geyser/Floodgate components may be cached.")
     cache_directory = Path(cache_directory)
     if cache_directory.exists() and cache_directory.is_symlink():
         fail("Central artifact cache directory cannot be a symlink.")
