@@ -75,7 +75,7 @@ if action == "probe-host":
         "--bedrock-port", bedrock_port,
     ]
 elif action == "core-update":
-    directory, session, port, bedrock_port, ready, start_timeout, stop_timeout, cache_dir, mode = args
+    directory, session, port, bedrock_port, ready, start_timeout, stop_timeout, cache_dir, expected_generation_id, mode = args
     argv += [
         "core-update", directory,
         "--session", session,
@@ -88,6 +88,8 @@ elif action == "core-update":
     ]
     if cache_dir:
         argv += ["--artifact-cache", cache_dir]
+    if expected_generation_id:
+        argv += ["--expected-generation-id", expected_generation_id]
     argv += [mode]
 else:
     raise SystemExit("Unsupported remote generation-helper action.")
@@ -160,7 +162,7 @@ PY
 }
 
 run_active_core_update() {
-    local mode="$1" artifact_cache="${2:-}"
+    local mode="$1" artifact_cache="${2:-}" expected_generation_id="${3:-}"
     if [[ "$ACTIVE_HOST" == "windows" ]]; then
         local -a args=(
             core-update "$WINDOWS_SERVER_DIR"
@@ -175,13 +177,16 @@ run_active_core_update() {
         if [[ -n "$artifact_cache" ]]; then
             args+=(--artifact-cache "$artifact_cache")
         fi
+        if [[ -n "$expected_generation_id" ]]; then
+            args+=(--expected-generation-id "$expected_generation_id")
+        fi
         args+=("$mode")
         run_windows_helper "${args[@]}"
     else
         run_ubuntu_helper core-update "$UBUNTU_SERVER_DIR" "$UBUNTU_TMUX_SESSION" \
             "$MINECRAFT_PORT" "$BEDROCK_PORT" "$READY_PATTERN" \
             "$START_TIMEOUT_SECONDS" "$STOP_TIMEOUT_SECONDS" \
-            "$artifact_cache" "$mode"
+            "$artifact_cache" "$expected_generation_id" "$mode"
     fi
 }
 
@@ -316,8 +321,16 @@ IFS= read -r confirmation
     die "Confirmation did not match. No live update was started."
 
 echo
+echo "========== POST-CONFIRMATION HOST AND GENERATION RECHECK =========="
+probe_both_hosts
+[[ "$ACTIVE_HOST" == "$INITIAL_ACTIVE_HOST" ]] ||
+    die "Active host changed after confirmation. No server stop was requested."
+[[ "$ACTIVE_GENERATION_ID" == "$INITIAL_ACTIVE_GENERATION_ID" ]] ||
+    die "Active generation changed after confirmation. No server stop was requested."
+
+echo
 echo "========== EXECUTE ON VERIFIED ACTIVE HOST =========="
-if run_active_core_update --execute "$DEPLOY_CACHE" | tee "$TMP_DIR/operation.log"; then
+if run_active_core_update --execute "$DEPLOY_CACHE" "$INITIAL_ACTIVE_GENERATION_ID" | tee "$TMP_DIR/operation.log"; then
     grep -Eq "CORE_UPDATE=(SUCCESS|ALREADY_CURRENT)" "$TMP_DIR/operation.log" ||
         die "Updater did not report a verified successful component transaction. Inspect the active server."
 else
