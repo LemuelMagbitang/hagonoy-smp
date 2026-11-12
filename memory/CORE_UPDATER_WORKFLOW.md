@@ -115,3 +115,17 @@ Source: user-supplied terminal output in the current conversation.
 - Native Minecraft commands, datapack functions, dialogs, and command blocks are future in-game feature design work; do not add packs/plugins during updater work.
 - Datapack deployment and the 13 enabled VanillaTweaks packs are separate from this updater phase.
 - VanillaTweaks source/archive changes are handled only in the datapack workflow. The user mentioned intending to remove a duplicate `VanillaTweaks-26.3.zip` in favor of the original `VanillaTweaks_d831085_UNZIP_ME.zip`; deletion was not confirmed in the current conversation, so do not record it as completed or delete either file.
+
+
+## Geyser regression-test fixture correction — 2026-11-13
+
+- Source: user-supplied traceback from the WSL test run.
+- The URL regression test's fake fetch_geysermc_default_builds() returned two entries: default build 1302 and experimental build 1802. The production helper filters the API build history to default-channel builds before returning, so this mock violated the mocked helper's contract.
+- fetch_geysermc_default_build() selects the maximum build among the default builds it receives. In the invalid test fixture, it correctly chose 1802 because the fake injected an experimental item after the filtering boundary.
+- This traceback does not demonstrate a production channel-selection defect. Channel filtering remains covered by dual-core-update-api-check.sh.
+- A fixture-only patch bundle hsmp-geyser-test-fixture-fix.zip was prepared. It removes the experimental fixture item from this URL-construction test and clarifies that the real default-channel filtering is tested by the core API suite. It does not modify production updater code.
+- The patch application's target anchors and Python compilation were tested against a temporary copy successfully. The user's WSL checkout has not yet received this fixture patch, and the actual Geyser regression test has not yet passed.
+- Patch delivery uses D:\Hagonoy-SMP\server-update-downloads (WSL /mnt/d/Hagonoy-SMP/server-update-downloads), never the user's Windows Downloads folder.
+- No live server, JAR, plugin, world, datapack, or backup was changed by this diagnosis or patch preparation.
+
+Next: apply the fixture correction from the central cache; run the URL regression and existing focused updater/Paper suites; then re-run plan mode. Do not retry live execution yet.
