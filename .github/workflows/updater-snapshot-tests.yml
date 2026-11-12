@@ -1,0 +1,42 @@
+name: HSMP copied updater snapshot tests
+
+on:
+  push:
+    branches: [work/hsmp-updater-source-20261113]
+  pull_request:
+    branches: [work/hsmp-updater-source-20261113]
+
+permissions:
+  contents: read
+
+jobs:
+  updater-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Compile generation helper
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: python3 -m py_compile bin/hagonoy-generation
+      - name: Runtime version regression
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: python3 tests/dual-runtime-version-probe-check.py
+      - name: Geyser and Floodgate download-key regression
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: python3 tests/dual-geyser-download-key-check.py
+      - name: Core updater API, plan, and transaction tests
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: |
+          bash tests/dual-core-update-api-check.sh
+          bash tests/dual-core-update-plan-check.sh
+          bash tests/dual-core-update-execution-check.sh
+      - name: Paper updater API, plan, and transaction tests
+        working-directory: server-files-copy/hsmp-updater-current-source
+        run: |
+          bash tests/dual-paper-update-api-check.sh
+          bash tests/dual-paper-update-plan-check.sh
+          bash tests/dual-paper-update-execution-check.sh
