@@ -95,3 +95,13 @@ These commits changed memory/documentation only. They did not push the user's lo
 - The subsequent `&&` chain stopped in its first suite, `bash tests/dual-core-update-api-check.sh`, with `File "<stdin>", line 48, AssertionError`. All later suites in the chain were skipped. Exact assertion is unknown; no diagnosis should be guessed. Next action: inspect the test around its embedded Python line and run with `bash -x`.
 - No live update was attempted; no server process, live JAR, plugin, world, datapack, or backup was changed by these tests.
 - User added a deferred cleanup requirement: after the server update is complete and verified, clean unnecessary files outside the structured Windows/Ubuntu server directories, including obsolete patch artifacts in `D:\Hagonoy-SMP\server-update-downloads`. Inventory and classify first; preserve required originals, current artifacts, rollback/recovery material until safe, and manager/server files. No deletion now.
+
+## 2026-11-13 — Core API test failure precisely identified
+
+- User supplied `nl -ba tests/dual-core-update-api-check.sh | sed -n '1,150p'` and `bash -x tests/dual-core-update-api-check.sh`.
+- The embedded Python heredoc starts at shell line 4; therefore traceback `File "<stdin>", line 48` points to physical shell file line 52.
+- Physical line 52 asserts that the Geyser metadata URL ends in `/1300/downloads/Geyser-Spigot.jar`. This is an obsolete pre-fix expectation. The production updater now constructs the correct official API route ending in `/1300/downloads/spigot`.
+- The preceding build-selection assertion (physical shell line 48) is not the failing assertion. No production code or release-channel filtering needs changing for this failure.
+- Next: perform a guarded test-only replacement of the expected URL suffix, then run compilation, Geyser regression, core API/plan/execution and Paper API/plan/execution suites in a fail-continue batch to collect all results in one pass.
+- User has set a two-day target for this maintenance/update work and asked for quicker, focused execution. Avoid additional discovery loops and sequential tests where a single batch can provide the same evidence.
+- No live server operation or server-file modification occurred during this test diagnosis.
