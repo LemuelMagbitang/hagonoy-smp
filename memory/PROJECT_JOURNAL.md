@@ -274,3 +274,11 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - User copied the exact current WSL `bin/hagonoy` into `server-files-copy/hsmp-updater-current-source/bin/hagonoy`, staged it, and displayed its staged diff as part of a commit/push command chain.
 - The terminal appeared to be inside Git's diff pager. User was advised to press `q`, which exits the pager and should allow the already-running `&&` chain to proceed to commit and push. Completion is pending actual command output.
 - No live server operations or server-file changes are involved in this source snapshot publication.
+
+## 2026-11-13 — Dispatcher snapshot commit succeeded; push awaits upstream
+
+- User supplied full terminal output for adding the WSL dispatcher to the source snapshot.
+- Diff showed the expected new 1,092-line executable file `server-files-copy/hsmp-updater-current-source/bin/hagonoy`.
+- Commit succeeded locally: `dbef9ed` on branch `fix/border-console-pane-and-parser-20261111`, message `Add current WSL dispatcher to updater source snapshot`.
+- Push failed with Git's expected no-upstream message. Recommended next command: `git push --set-upstream origin fix/border-console-pane-and-parser-20261111`.
+- Commit is already created; do not repeat. File is not yet confirmed published to GitHub. No Minecraft server operation or live server-file change occurred.
