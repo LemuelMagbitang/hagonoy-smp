@@ -213,3 +213,17 @@ User supplied the complete WSL source for save(), save_new(), verify_core_update
 - save() atomically replaces an existing manifest; save_new() atomically creates one and refuses overwrite. Keep these manifest safety semantics while adding host-aware identity checks.
 
 No source patch or live operation was performed; no server files changed. The nine existing focused tests remain the last confirmed baseline and do not cover these gaps. Next: inspect lifecycle helper signatures and manifest-mutating call sites, then implement host/cache routing in one scoped patch and add tests for both host paths, rechecks, and rollback.
+
+
+## 2026-11-13 — Lifecycle host-parameter and failed-start recovery gaps
+
+User supplied the complete start_managed_server(), stop_managed_server(), mark_failed_start_stopped(), and lifecycle CLI excerpts.
+
+- start_managed_server(directory, ..., host='ubuntu') reads the manifest and branches by host for verification/launcher behavior, but it does not verify manifest.host == host before either idempotent RUNNING verification or STOPPED-to-RUNNING begin(). Since begin() writes the host into the next generation, a wrong-host call could reassign generation ownership unless guarded.
+- stop_managed_server() likewise does not verify manifest.host == host before shutdown. Add an explicit check before idempotent or active stop behavior.
+- verify_stopped_server() verifies manifest stopped plus tmux/listener state but not manifest.host against its host argument.
+- mark_failed_start_stopped() is Ubuntu-only: it checks the WSL tmux session and Linux TCP `ss`, but has no selected-host argument and does not check Bedrock UDP. Windows failed-start recovery would therefore use the wrong host evidence.
+- stop_managed_server() checks both TCP and UDP listener clearance for Windows, but only TCP clearance for Ubuntu. The Ubuntu stop condition must include Bedrock UDP too.
+- CLI already exposes --host on start-server and stop-server. core-update remains missing host and artifact-cache/staging parameters.
+
+No code changes, live server operation, plugin/world/datapack change, or backup occurred. These host consistency and recovery checks must be included in the consolidated host/cache patch and covered by dedicated tests.
