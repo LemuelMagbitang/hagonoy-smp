@@ -208,7 +208,7 @@ def query_runtime_versions_from_console(session):
     )
 
 
-def verify_running_server_windows(directory, paper, minecraft, session, port):
+def verify_running_server_windows(directory, paper, minecraft, session, port, bedrock_port=19132):
     directory = Path(directory).resolve(strict=True)
     if not directory.is_dir():
         fail("Windows server directory is invalid.")
@@ -226,7 +226,7 @@ def verify_running_server_windows(directory, paper, minecraft, session, port):
 $ErrorActionPreference = 'Stop'
 $expected = [IO.Path]::GetFullPath('{windows_directory}')
 $t = @(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue)
-$u = @(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue)
+$u = @(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue)
 $ids = @($t | Select-Object -ExpandProperty OwningProcess -Unique)
 $udpIds = @($u | Select-Object -ExpandProperty OwningProcess -Unique)
 $j = 0
@@ -316,7 +316,7 @@ if ($ids.Count -eq 1) {{
 
 def verify_running_server(
     directory, host, paper, minecraft, session, port,
-    proc_root="/proc", require_manifest_absent=True
+    proc_root="/proc", require_manifest_absent=True, bedrock_port=19132
 ):
     if host not in ("ubuntu", "windows"):
         fail(f"Unsupported runtime host: {host}")
@@ -334,7 +334,7 @@ def verify_running_server(
 
     if host == "windows":
         return verify_running_server_windows(
-            directory, paper, minecraft, session, port
+            directory, paper, minecraft, session, port, bedrock_port
         )
 
     if not directory.is_dir():
@@ -414,11 +414,11 @@ def verify_running_server(
         )
 
     udp_listeners = run_command([
-        "ss", "-H", "-lun", f"sport = :19132"
+        "ss", "-H", "-lun", f"sport = :{bedrock_port}"
     ])
     udp_pids = set(re.findall(r"\bpid=(\d+)\b", udp_listeners))
     if udp_pids != {pid}:
-        fail("Bedrock UDP port 19132 is not owned by the verified Java process.")
+        fail(f"Bedrock UDP port {bedrock_port} is not owned by the verified Java process.")
 
     # Prefer startup banners when present. They may have rotated out of
     # latest.log, so query the live console for a fresh, independently
@@ -621,7 +621,7 @@ def java_processes_in_directory(directory, proc_root="/proc"):
     return sorted(set(matches))
 
 
-def verify_stopped_server(directory, session, port, host="ubuntu"):
+def verify_stopped_server(directory, session, port, host="ubuntu", bedrock_port=19132):
     directory = Path(directory).resolve(strict=True)
     data = load(directory)
 
@@ -645,7 +645,7 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
         ps = (
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
-            "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+            f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
             "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)\\\\javaw?\\\\.exe$' -and $_.CommandLine -match '(?i)server\\\\.jar' }).Count; "
             "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_SERVER_PROCESSES='+$j"
         )
@@ -682,7 +682,7 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
         "ss", "-H", "-ltn", f"sport = :{port}"
     ])
     udp_listeners = run_command([
-        "ss", "-H", "-lun", "sport = :19132"
+        "ss", "-H", "-lun", f"sport = :{bedrock_port}"
     ])
     if listeners.strip() or udp_listeners.strip():
         fail("Minecraft TCP or Bedrock UDP listener remains active.")
@@ -696,7 +696,7 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
     return data
 
 
-def start_managed_server(directory, session, port, ready_pattern, timeout, host='ubuntu'):
+def start_managed_server(directory, session, port, ready_pattern, timeout, host='ubuntu', bedrock_port=19132):
     directory = validate_lifecycle_args(
         directory, session, port, timeout
     )
@@ -717,7 +717,7 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
     if data["state"] == "running":
         runtime = verify_running_server(
             directory, host, "AUTO", "AUTO",
-            session, port, require_manifest_absent=False
+            session, port, require_manifest_absent=False, bedrock_port=bedrock_port
         )
         print("SERVER_ALREADY_RUNNING")
         print(f"GENERATION={data['generation']}")
@@ -728,7 +728,7 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
     if data["state"] != "stopped":
         fail("Manifest state is uncertain. Refusing to start.")
 
-    verify_stopped_server(directory, session, port, host=host)
+    verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
 
     server_jar = directory / "server.jar"
     log_path = directory / "logs" / "latest.log"
@@ -810,7 +810,7 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
             try:
                 runtime = verify_running_server(
                     directory, host, "AUTO", "AUTO",
-                    session, port, require_manifest_absent=False
+                    session, port, require_manifest_absent=False, bedrock_port=bedrock_port
                 )
             except RuntimeError as exc:
                 elapsed = int(time.monotonic() - started_at)
@@ -913,7 +913,7 @@ def get_tmux_pane_target(session):
     return target
 
 
-def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
+def stop_managed_server(directory, session, port, timeout, host='ubuntu', bedrock_port=19132):
     directory = validate_lifecycle_args(
         directory, session, port, timeout
     )
@@ -929,7 +929,7 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
 
     # Idempotent stop: a verified stopped server requires no new transition.
     if data["state"] == "stopped":
-        verify_stopped_server(directory, session, port, host=host)
+        verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
         print("SERVER_ALREADY_STOPPED")
         print(f"GENERATION={data['generation']}")
         print(f"GENERATION_ID={data['generation_id']}")
@@ -940,7 +940,7 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
 
     runtime = verify_running_server(
         directory, host, "AUTO", "AUTO",
-        session, port, require_manifest_absent=False
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
     )
 
     pane_target = get_tmux_pane_target(session)
@@ -984,7 +984,7 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
             ps = (
                 "$ErrorActionPreference='Stop'; "
                 f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
-                "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+                f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
                 "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
             )
             try:
@@ -1017,7 +1017,7 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
                 "ss", "-H", "-ltn", f"sport = :{port}"
             ])
             udp_listeners = run_command([
-                "ss", "-H", "-lun", "sport = :19132"
+                "ss", "-H", "-lun", f"sport = :{bedrock_port}"
             ])
             listeners_clear = not listeners.strip() and not udp_listeners.strip()
 
@@ -1223,7 +1223,7 @@ def sync_directory(directory):
         os.close(descriptor)
 
 
-def mark_failed_start_stopped(directory, session, port, expected_generation_id, host="ubuntu"):
+def mark_failed_start_stopped(directory, session, port, expected_generation_id, host="ubuntu", bedrock_port=19132):
     directory = Path(directory).resolve(strict=True)
     data = load(directory)
     if data is None or data.get("host") != host:
@@ -1244,7 +1244,7 @@ def mark_failed_start_stopped(directory, session, port, expected_generation_id, 
         ps = (
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
-            "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
+            f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
             "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
         )
         result = subprocess.run(
@@ -1265,7 +1265,7 @@ def mark_failed_start_stopped(directory, session, port, expected_generation_id, 
             fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
     elif host == "ubuntu":
         listeners = run_command(["ss", "-H", "-ltn", f"sport = :{port}"])
-        udp_listeners = run_command(["ss", "-H", "-lun", "sport = :19132"])
+        udp_listeners = run_command(["ss", "-H", "-lun", f"sport = :{bedrock_port}])
         if listeners.strip() or udp_listeners.strip():
             fail(
                 "Minecraft TCP or Bedrock UDP listener remains active. "
@@ -1708,11 +1708,11 @@ def restore_core_update_jars(changes, transaction_dir):
 
 def verify_core_update_runtime(
     directory, session, port, minecraft_version, expected_paper_build,
-    plugins, expected_plugin_versions, host="ubuntu"
+    plugins, expected_plugin_versions, host="ubuntu", bedrock_port=19132
 ):
     runtime = verify_running_server(
         directory, host, "AUTO", "AUTO",
-        session, port, require_manifest_absent=False
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
     )
     if runtime["minecraft_version"] != minecraft_version:
         fail(
@@ -1837,7 +1837,7 @@ def populate_core_artifact_cache(cache_directory, minecraft_version, components,
 def update_core_server(
     directory, session, port, ready_pattern,
     start_timeout, stop_timeout, user_agent, mode, host="ubuntu",
-    artifact_cache=None
+    artifact_cache=None, bedrock_port=19132
 ):
     if mode not in ("plan", "execute"):
         fail("Core update mode must be plan or execute.")
@@ -1851,7 +1851,7 @@ def update_core_server(
 
     runtime = verify_running_server(
         directory, host, "AUTO", "AUTO",
-        session, port, require_manifest_absent=False
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
     )
     minecraft_version = runtime["minecraft_version"]
     current_paper = runtime["paper_version"]
@@ -2053,7 +2053,7 @@ def update_core_server(
         sync_directory(transaction_dir)
 
         print("\n========== GRACEFUL SERVER STOP ==========")
-        stop_managed_server(directory, session, port, stop_timeout, host=host)
+        stop_managed_server(directory, session, port, stop_timeout, host=host, bedrock_port=bedrock_port)
         stopped = load(directory)
         if (
             stopped is None
@@ -2073,7 +2073,7 @@ def update_core_server(
                 try:
                     start_managed_server(
                         directory, session, port, ready_pattern, start_timeout,
-                        host=host
+                        host=host, bedrock_port=bedrock_port
                     )
                 except Exception as restart_error:
                     keep_transaction = True
@@ -2108,7 +2108,7 @@ def update_core_server(
             try:
                 start_managed_server(
                     directory, session, port, ready_pattern, start_timeout,
-                    host=host
+                    host=host, bedrock_port=bedrock_port
                 )
             except Exception as restart_error:
                 keep_transaction = True
@@ -2164,7 +2164,7 @@ def update_core_server(
             verify_core_update_runtime(
                 directory, session, port, minecraft_version,
                 expected_paper_build, runtime_plugins,
-                expected_plugin_versions, host=host
+                expected_plugin_versions, host=host, bedrock_port=bedrock_port
             )
             updated = load(directory)
             if updated is None or updated["state"] != "running":
@@ -2205,7 +2205,7 @@ def update_core_server(
                         directory, host, "AUTO", "AUTO",
                         session, port, require_manifest_absent=False
                     )
-                    stop_managed_server(directory, session, port, stop_timeout, host=host)
+                    stop_managed_server(directory, session, port, stop_timeout, host=host, bedrock_port=bedrock_port)
                 except Exception as stop_error:
                     keep_transaction = True
                     fail(
@@ -2218,7 +2218,7 @@ def update_core_server(
                 try:
                     mark_failed_start_stopped(
                         directory, session, port,
-                        failed_generation["generation_id"], host=host
+                        failed_generation["generation_id"], host=host, bedrock_port=bedrock_port
                     )
                 except Exception as stop_error:
                     keep_transaction = True
@@ -2257,7 +2257,7 @@ def update_core_server(
             try:
                 start_managed_server(
                     directory, session, port, ready_pattern, start_timeout,
-                    host=host
+                    host=host, bedrock_port=bedrock_port
                 )
                 old_expected_plugins = {
                     project: plugin["version"] for project, plugin in plugins.items()
@@ -2268,7 +2268,7 @@ def update_core_server(
                 verify_core_update_runtime(
                     directory, session, port, minecraft_version,
                     current_paper_build, old_runtime_plugins,
-                    old_expected_plugins, host=host
+                    old_expected_plugins, host=host, bedrock_port=bedrock_port
                 )
             except Exception as rollback_error:
                 keep_transaction = True
@@ -2634,7 +2634,7 @@ def finish(directory):
     print("Generation marked STOPPED.")
     show(directory)
 
-def probe_managed_host(directory, host, session, port):
+def probe_managed_host(directory, host, session, port, bedrock_port=19132):
     """Read-only probe of one canonical host; never changes server state."""
     if host not in ("ubuntu", "windows"):
         fail(f"Unsupported probe host: {host}")
@@ -2649,10 +2649,10 @@ def probe_managed_host(directory, host, session, port):
     if state == "running":
         runtime = verify_running_server(
             directory, host, "AUTO", "AUTO", session, port,
-            require_manifest_absent=False
+            require_manifest_absent=False, bedrock_port=bedrock_port
         )
     elif state == "stopped":
-        verify_stopped_server(directory, session, port, host=host)
+        verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
     else:
         fail(f"{host} manifest state is unknown.")
     print(json.dumps({
@@ -2816,6 +2816,7 @@ def main():
     s.add_argument("--stop-timeout", type=int, default=180)
     s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
     s.add_argument("--artifact-cache")
+    s.add_argument("--bedrock-port", type=int, default=19132)
     core_mode = s.add_mutually_exclusive_group(required=True)
     core_mode.add_argument("--plan", dest="mode", action="store_const", const="plan")
     core_mode.add_argument("--execute", dest="mode", action="store_const", const="execute")
@@ -2841,6 +2842,7 @@ def main():
     s.add_argument("--host", choices=("ubuntu", "windows"), required=True)
     s.add_argument("--session", default="mcserver")
     s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--bedrock-port", type=int, default=19132)
 
     s = sub.add_parser("select-active-host")
     s.add_argument("ubuntu_json")
@@ -2888,12 +2890,12 @@ def main():
             args.directory, args.session, args.port,
             args.ready_pattern, args.start_timeout,
             args.stop_timeout, args.user_agent, args.mode, args.host,
-            args.artifact_cache
+            args.artifact_cache, args.bedrock_port
         )
     elif args.action == "finish":
         finish(args.directory)
     elif args.action == "probe-host":
-        probe_managed_host(args.directory, args.host, args.session, args.port)
+        probe_managed_host(args.directory, args.host, args.session, args.port, args.bedrock_port)
     elif args.action == "select-active-host":
         ubuntu_probe = json.loads(Path(args.ubuntu_json).read_text(encoding="utf-8"))
         windows_probe = json.loads(Path(args.windows_json).read_text(encoding="utf-8"))
