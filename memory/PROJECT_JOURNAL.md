@@ -256,3 +256,14 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - This is an access blocker, not a source-code or server blocker. The user's local archive path and reported digest have not been independently verified here.
 - No speculative source patch was made. GitHub documentation is updated, but remote default-branch source is not an authorized substitute for the current unpushed WSL worktree. No test or live status command was run; no live server/JAR/plugin/world/datapack/backup was altered.
 - Next: attach the archive; independently verify hash/contents; implement one consolidated patch; batch both-host/cache/rollback tests and existing tests; run a read-only live plan; seek explicit live-update approval only after the plan passes.
+
+## 2026-11-13 — GitHub extracted source inventory and exact dispatcher mismatch
+
+- User supplied `https://github.com/LemuelMagbitang/hagonoy-smp/tree/main/server-files-copy` as the source handoff location.
+- Inspected the repository recursively. `server-files-copy/hsmp-updater-current-source/` currently contains 12 extracted files, not the 16 requested in the generated WSL archive: root `hagonoy` shim; two files under `bin/` (`hagonoy-dual-lifecycle`, `hagonoy-generation`); `config/dual-host.conf`; and eight updater/runtime tests.
+- Missing from extracted folder: `bin/hagonoy`, `bin/hagonoy-dual`, `bin/hagonoy-dual-status`, `bin/hagonoy-dual-windows-lifecycle`.
+- Retrieved the three dual support scripts from root/main. Their content is aligned with the user's previously pasted versions of `hagonoy-dual`, `hagonoy-dual-status`, and `hagonoy-dual-windows-lifecycle`.
+- Root/main `bin/hagonoy` is not current: it routes `update --plan` to the addon inventory, routes `paper-update` to the old Ubuntu lifecycle, and declares full `update` not implemented. The previously inspected current WSL dispatcher routes regular full update to the dual lifecycle wrapper. Do not substitute the root copy.
+- The extracted `bin/hagonoy-generation` is the large 95,553-byte revision; root/main helper is only 49,351 bytes and has a different Git blob SHA. Keep the extracted helper, not root/main.
+- Next minimum gap is the exact current WSL `bin/hagonoy` dispatcher. User can publish that one file into the extracted `bin/` folder or provide the full 16-file archive when able. Do not perform more broad source discovery.
+- No source patch, tests, fresh status/plan, or live server operation occurred in this inspection. No server artifacts/content were modified.
