@@ -288,3 +288,7 @@ The user-provided GitHub `server-files-copy` location is accessible. Its extract
 Do not substitute root/main `bin/hagonoy`: that file is an older 45,561-byte router whose regular `update --plan` invokes addon inventory and whose `update` execution path explicitly reports full update unimplemented. This conflicts with the user's previously inspected current WSL dispatcher, which routes full update through dual lifecycle. Also do not substitute root/main `bin/hagonoy-generation` (49,351 bytes) for the 95,553-byte extracted helper.
 
 Next minimum input: add the current WSL `bin/hagonoy` to `server-files-copy/hsmp-updater-current-source/bin/hagonoy` or upload the exact 16-file archive. Then proceed directly to consolidated patch preparation. No server changes or fresh plan occurred during this inspection.
+
+## Source handoff convention — 2026-11-13
+
+For requested project-file uploads, the user designated repository `server-files-copy/` as the canonical handoff location; chat attachments are also acceptable. The current exact WSL dispatcher has been copied and staged at `server-files-copy/hsmp-updater-current-source/bin/hagonoy`. The displayed diff was still open in the pager at the last checkpoint; press `q` to exit it and allow the chained commit/push commands to continue. Verify commit/push from actual terminal output before treating the source snapshot as complete.
