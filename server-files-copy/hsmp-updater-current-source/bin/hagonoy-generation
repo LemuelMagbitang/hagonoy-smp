@@ -45,6 +45,8 @@ def load(directory):
         fail("Unsupported generation manifest schema.")
     if data.get("state") not in ("running", "stopped"):
         fail("Invalid generation state.")
+    if data.get("host") not in ("ubuntu", "windows"):
+        fail("Generation manifest has an invalid or missing host identity.")
 
     generation = data.get("generation")
     if (not isinstance(generation, int) or isinstance(generation, bool)
@@ -289,23 +291,27 @@ def verify_running_server(
     directory, host, paper, minecraft, session, port,
     proc_root="/proc", require_manifest_absent=True
 ):
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported runtime host: {host}")
+    directory = Path(directory).resolve(strict=True)
+    if require_manifest_absent:
+        manifest = directory / FILENAME
+        if manifest.exists() or manifest.is_symlink():
+            fail("Generation manifest already exists. Refusing adoption.")
+    else:
+        managed_manifest = load(directory)
+        if managed_manifest is None or managed_manifest.get("host") != host:
+            fail(f"Generation manifest host does not match requested runtime host {host}.")
+        if managed_manifest.get("state") != "running":
+            fail("Generation manifest is not RUNNING for runtime verification.")
+
     if host == "windows":
         return verify_running_server_windows(
             directory, paper, minecraft, session, port
         )
-    if host != "ubuntu":
-        fail(f"Unsupported runtime host: {host}")
-
-    directory = Path(directory).resolve(strict=True)
 
     if not directory.is_dir():
         fail("Server path is not a directory.")
-
-    manifest = directory / FILENAME
-    if require_manifest_absent and (
-        manifest.exists() or manifest.is_symlink()
-    ):
-        fail("Generation manifest already exists. Refusing adoption.")
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
         fail("Invalid tmux session name.")
@@ -379,6 +385,13 @@ def verify_running_server(
             "Minecraft Java process is running from an unexpected directory: "
             f"{process_cwd}"
         )
+
+    udp_listeners = run_command([
+        "ss", "-H", "-lun", f"sport = :19132"
+    ])
+    udp_pids = set(re.findall(r"\bpid=(\d+)\b", udp_listeners))
+    if udp_pids != {pid}:
+        fail("Bedrock UDP port 19132 is not owned by the verified Java process.")
 
     # Prefer startup banners when present. They may have rotated out of
     # latest.log, so query the live console for a fresh, independently
@@ -565,6 +578,8 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
 
     if data is None:
         fail("No generation manifest exists.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested stopped-state host {host}.")
     if data["state"] != "stopped":
         fail("Manifest is not STOPPED. Refusing to start another generation.")
 
@@ -615,8 +630,11 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
     listeners = run_command([
         "ss", "-H", "-ltn", f"sport = :{port}"
     ])
-    if listeners.strip():
-        fail(f"Minecraft TCP port {port} is still listening.")
+    udp_listeners = run_command([
+        "ss", "-H", "-lun", "sport = :19132"
+    ])
+    if listeners.strip() or udp_listeners.strip():
+        fail("Minecraft TCP or Bedrock UDP listener remains active.")
 
     return data
 
@@ -635,6 +653,8 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
     data = load(directory)
     if data is None:
         fail("No generation manifest. Initial adoption must be performed first.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested start host {host}.")
 
     # Idempotent start: do not create a generation if the server is already live.
     if data["state"] == "running":
@@ -847,6 +867,8 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
     data = load(directory)
     if data is None:
         fail("No generation manifest exists.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested stop host {host}.")
 
     # Idempotent stop: a verified stopped server requires no new transition.
     if data["state"] == "stopped":
@@ -937,7 +959,10 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
             listeners = run_command([
                 "ss", "-H", "-ltn", f"sport = :{port}"
             ])
-            listeners_clear = not listeners.strip()
+            udp_listeners = run_command([
+                "ss", "-H", "-lun", "sport = :19132"
+            ])
+            listeners_clear = not listeners.strip() and not udp_listeners.strip()
 
         if session_result.returncode == 1 and listeners_clear:
             current = load(directory)
@@ -1605,10 +1630,10 @@ def restore_core_update_jars(changes, transaction_dir):
 
 def verify_core_update_runtime(
     directory, session, port, minecraft_version, expected_paper_build,
-    plugins, expected_plugin_versions
+    plugins, expected_plugin_versions, host="ubuntu"
 ):
     runtime = verify_running_server(
-        directory, "ubuntu", "AUTO", "AUTO",
+        directory, host, "AUTO", "AUTO",
         session, port, require_manifest_absent=False
     )
     if runtime["minecraft_version"] != minecraft_version:
@@ -1637,7 +1662,7 @@ def verify_core_update_runtime(
 
 def update_core_server(
     directory, session, port, ready_pattern,
-    start_timeout, stop_timeout, user_agent, mode
+    start_timeout, stop_timeout, user_agent, mode, host="ubuntu"
 ):
     if mode not in ("plan", "execute"):
         fail("Core update mode must be plan or execute.")
@@ -1646,11 +1671,11 @@ def update_core_server(
     )
 
     data = load(directory)
-    if data is None or data["state"] != "running" or data.get("host") != "ubuntu":
-        fail("Core update requires a tracked RUNNING Ubuntu generation.")
+    if data is None or data["state"] != "running" or data.get("host") != host:
+        fail(f"Core update requires a tracked RUNNING {host} generation.")
 
     runtime = verify_running_server(
-        directory, "ubuntu", "AUTO", "AUTO",
+        directory, host, "AUTO", "AUTO",
         session, port, require_manifest_absent=False
     )
     minecraft_version = runtime["minecraft_version"]
@@ -1663,6 +1688,8 @@ def update_core_server(
     current_paper_build = int(current_match.group(1))
 
     print("========== HSMP CORE UPDATE CHECK ==========")
+    print(f"ACTIVE_HOST={host.upper()}")
+    print(f"SERVER_DIRECTORY={directory}")
     print(f"MINECRAFT_VERSION={minecraft_version}")
     print(f"CURRENT_PAPER={current_paper}")
     print(f"CURRENT_PAPER_BUILD={current_paper_build}")
@@ -1839,7 +1866,7 @@ def update_core_server(
         sync_directory(transaction_dir)
 
         print("\n========== GRACEFUL SERVER STOP ==========")
-        stop_managed_server(directory, session, port, stop_timeout)
+        stop_managed_server(directory, session, port, stop_timeout, host=host)
         stopped = load(directory)
         if (
             stopped is None
@@ -1858,7 +1885,8 @@ def update_core_server(
             if target.is_symlink() or not target.is_file() or sha256_file(target) != change["old_sha256"]:
                 try:
                     start_managed_server(
-                        directory, session, port, ready_pattern, start_timeout
+                        directory, session, port, ready_pattern, start_timeout,
+                        host=host
                     )
                 except Exception as restart_error:
                     keep_transaction = True
@@ -1892,7 +1920,8 @@ def update_core_server(
                 )
             try:
                 start_managed_server(
-                    directory, session, port, ready_pattern, start_timeout
+                    directory, session, port, ready_pattern, start_timeout,
+                    host=host
                 )
             except Exception as restart_error:
                 keep_transaction = True
@@ -1936,7 +1965,8 @@ def update_core_server(
         print("\n========== START AND VERIFY UPDATED COMPONENTS ==========")
         try:
             start_managed_server(
-                directory, session, port, ready_pattern, start_timeout
+                directory, session, port, ready_pattern, start_timeout,
+                host=host
             )
             # Use the plugin names from the newly staged descriptors when they
             # changed; existing names remain authoritative for skipped JARs.
@@ -1947,7 +1977,7 @@ def update_core_server(
             verify_core_update_runtime(
                 directory, session, port, minecraft_version,
                 expected_paper_build, runtime_plugins,
-                expected_plugin_versions
+                expected_plugin_versions, host=host
             )
             updated = load(directory)
             if updated is None or updated["state"] != "running":
@@ -1985,10 +2015,10 @@ def update_core_server(
             if session_state.returncode == 0:
                 try:
                     verify_running_server(
-                        directory, "ubuntu", "AUTO", "AUTO",
+                        directory, host, "AUTO", "AUTO",
                         session, port, require_manifest_absent=False
                     )
-                    stop_managed_server(directory, session, port, stop_timeout)
+                    stop_managed_server(directory, session, port, stop_timeout, host=host)
                 except Exception as stop_error:
                     keep_transaction = True
                     fail(
@@ -2039,7 +2069,8 @@ def update_core_server(
             print("RESTARTING_PREVIOUS_COMPONENT_SET")
             try:
                 start_managed_server(
-                    directory, session, port, ready_pattern, start_timeout
+                    directory, session, port, ready_pattern, start_timeout,
+                    host=host
                 )
                 old_expected_plugins = {
                     project: plugin["version"] for project, plugin in plugins.items()
@@ -2050,7 +2081,7 @@ def update_core_server(
                 verify_core_update_runtime(
                     directory, session, port, minecraft_version,
                     current_paper_build, old_runtime_plugins,
-                    old_expected_plugins
+                    old_expected_plugins, host=host
                 )
             except Exception as rollback_error:
                 keep_transaction = True
@@ -2416,6 +2447,39 @@ def finish(directory):
     print("Generation marked STOPPED.")
     show(directory)
 
+def probe_managed_host(directory, host, session, port):
+    """Read-only probe of one canonical host; never changes server state."""
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported probe host: {host}")
+    directory = Path(directory).resolve(strict=True)
+    manifest = load(directory)
+    if manifest is None:
+        fail(f"{host} canonical server has no generation manifest.")
+    if manifest.get("host") != host:
+        fail(f"{host} directory contains a manifest for {manifest.get('host')!r}.")
+    state = manifest.get("state")
+    runtime = None
+    if state == "running":
+        runtime = verify_running_server(
+            directory, host, "AUTO", "AUTO", session, port,
+            require_manifest_absent=False
+        )
+    elif state == "stopped":
+        verify_stopped_server(directory, session, port, host=host)
+    else:
+        fail(f"{host} manifest state is unknown.")
+    print(json.dumps({
+        "host": host, "state": state,
+        "generation": manifest["generation"],
+        "generation_id": manifest["generation_id"],
+        "parent_generation_id": manifest.get("parent_generation_id"),
+        "ancestors": manifest["ancestors"],
+        "paper_version": runtime["paper_version"] if runtime else manifest.get("paper_version"),
+        "minecraft_version": runtime["minecraft_version"] if runtime else manifest.get("minecraft_version"),
+        "directory": str(directory),
+    }, sort_keys=True))
+
+
 def select(ubuntu, windows):
     paths = {"UBUNTU": Path(ubuntu), "WINDOWS": Path(windows)}
     existing = {k: p.is_dir() for k, p in paths.items()}
@@ -2510,6 +2574,7 @@ def main():
     s.add_argument("--ready-pattern", default="Done")
     s.add_argument("--start-timeout", type=int, default=900)
     s.add_argument("--stop-timeout", type=int, default=180)
+    s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
     core_mode = s.add_mutually_exclusive_group(required=True)
     core_mode.add_argument("--plan", dest="mode", action="store_const", const="plan")
     core_mode.add_argument("--execute", dest="mode", action="store_const", const="execute")
@@ -2520,6 +2585,12 @@ def main():
 
     s = sub.add_parser("finish")
     s.add_argument("directory")
+
+    s = sub.add_parser("probe-host")
+    s.add_argument("directory")
+    s.add_argument("--host", choices=("ubuntu", "windows"), required=True)
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
 
     s = sub.add_parser("select")
     s.add_argument("ubuntu_directory")
@@ -2562,10 +2633,12 @@ def main():
         update_core_server(
             args.directory, args.session, args.port,
             args.ready_pattern, args.start_timeout,
-            args.stop_timeout, args.user_agent, args.mode
+            args.stop_timeout, args.user_agent, args.mode, args.host
         )
     elif args.action == "finish":
         finish(args.directory)
+    elif args.action == "probe-host":
+        probe_managed_host(args.directory, args.host, args.session, args.port)
     elif args.action == "select":
         select(args.ubuntu_directory, args.windows_directory)
 
