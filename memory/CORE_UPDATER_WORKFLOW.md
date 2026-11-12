@@ -129,3 +129,14 @@ Source: user-supplied terminal output in the current conversation.
 - No live server, JAR, plugin, world, datapack, or backup was changed by this diagnosis or patch preparation.
 
 Next: apply the fixture correction from the central cache; run the URL regression and existing focused updater/Paper suites; then re-run plan mode. Do not retry live execution yet.
+
+
+## Post-fixture test result and eventual cleanup — 2026-11-13
+
+- User applied `hsmp-geyser-test-fixture-fix.zip` successfully. Only `tests/dual-geyser-download-key-check.py` was changed.
+- `python3 -m py_compile bin/hagonoy-generation` passed.
+- `python3 tests/dual-geyser-download-key-check.py` passed:
+  - Geyser build 1302 uses `/downloads/spigot`, not the artifact filename.
+  - Floodgate build 141 uses `/downloads/spigot`, not the artifact filename.
+- User then ran the six core/Paper suites as an `&&` chain. The first suite, `tests/dual-core-update-api-check.sh`, stopped with an embedded Python traceback `File "<stdin>", line 48, AssertionError`. Because of `&&`, no subsequent core plan/execution or Paper suites ran in that command. Exact assertion is unknown. Next: inspect the script around its embedded Python block and run `bash -x tests/dual-core-update-api-check.sh`; do not change production code until the failing expectation is identified.
+- Later cleanup is a distinct post-update phase requested by the user. Once the server update is complete and verified, inventory files outside the structured Windows/Ubuntu live server directories, including obsolete contents in `D:\Hagonoy-SMP\server-update-downloads`. Classify keep/archive/delete candidates, preserve required original source archives, current artifacts, recovery/rollback material until safe, and all canonical server/manager files. Do not perform automatic or premature deletion; obtain explicit approval for destructive cleanup.
