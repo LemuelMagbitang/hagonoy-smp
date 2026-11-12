@@ -153,3 +153,15 @@ Next: apply the fixture correction from the central cache; run the URL regressio
 - After the guarded one-line correction, run compilation, the Geyser URL regression, and every core/Paper API, plan, and execution suite in one fail-continue batch; report all failures together rather than stopping at the first `&&` failure.
 - Schedule priority: user expects this maintenance/update work to finish within the two-day window. Batch work, avoid repeated rediscovery and unnecessary audits, and focus on the remaining concrete blockers: test baseline, central D: artifact cache, correct active-host detection/routing, live update, and health verification.
 - Do not execute the live update until the cache and host-routing requirements are actually met; do not represent those requirements as complete based on the current Ubuntu-specific plan.
+
+
+## Operational acceptance: server must return healthy and running
+
+- The purpose of every maintenance operation is to leave HSMP healthy, verified, and running on the same authoritative host that was positively identified at preflight.
+- A stop is a temporary maintenance action only when the selected files cannot safely be replaced while the server is running. Do not stop the server merely to probe, plan, or test code.
+- Keep the server online during all plan-only, metadata discovery, download, checksum, archive/JAR integrity, compatibility, and remote-stage verification work. Complete these steps before graceful shutdown.
+- For an executed update: revalidate host identity/state immediately before stop; save and gracefully stop; apply only the verified managed JAR set; start the same host; wait for readiness; verify Minecraft version unchanged, Paper build, Geyser/Floodgate runtime versions, Java and Bedrock listeners as applicable, and a successful live status/readback. Perform practical player-connection checks where available.
+- If any post-replacement check fails, restore all changed managed JARs together and restart the original set. Verify the restored server reaches readiness. Do not report success until the server is running and health checks pass.
+- Never force-kill Java or leave the canonical server stopped as a normal terminal result. If automated recovery cannot restore service, report the precise failed recovery step and provide the safest immediate recovery action; do not claim the server is healthy.
+- The inactive host must remain stopped throughout the update; exactly one canonical host should be running after successful completion.
+- The user provided the current-source ZIP's local SHA-256 as `bc9f4df991079266ba1957f16ac6bae13ea82cbc304696f1a59a9d365da288ce`. The archive itself was not attached to the assistant's runtime as of this checkpoint; verify the uploaded archive's hash before inspection or patching.
