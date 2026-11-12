@@ -985,7 +985,8 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu', bedroc
                 "$ErrorActionPreference='Stop'; "
                 f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
                 f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
-                "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+                "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
+                "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_COUNT='+$j"
             )
             try:
                 listener_result = subprocess.run(
@@ -1008,10 +1009,11 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu', bedroc
             try:
                 tcp_count = int(values["TCP_COUNT"])
                 udp_count = int(values["UDP_COUNT"])
+                java_count = int(values["JAVA_COUNT"])
             except (KeyError, ValueError):
-                fail("Windows listener check returned incomplete data.")
+                fail("Windows listener/process check returned incomplete data.")
 
-            listeners_clear = tcp_count == 0 and udp_count == 0
+            listeners_clear = tcp_count == 0 and udp_count == 0 and java_count == 0
         else:
             listeners = run_command([
                 "ss", "-H", "-ltn", f"sport = :{port}"
@@ -1019,7 +1021,12 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu', bedroc
             udp_listeners = run_command([
                 "ss", "-H", "-lun", f"sport = :{bedrock_port}"
             ])
-            listeners_clear = not listeners.strip() and not udp_listeners.strip()
+            java_pids = java_processes_in_directory(directory)
+            listeners_clear = (
+                not listeners.strip()
+                and not udp_listeners.strip()
+                and not java_pids
+            )
 
         if session_result.returncode == 1 and listeners_clear:
             current = load(directory)
@@ -1245,7 +1252,8 @@ def mark_failed_start_stopped(directory, session, port, expected_generation_id, 
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
             f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
-            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_COUNT='+$j"
         )
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -1259,16 +1267,18 @@ def mark_failed_start_stopped(directory, session, port, expected_generation_id, 
         )
         try:
             tcp_count, udp_count = int(values["TCP_COUNT"]), int(values["UDP_COUNT"])
+            java_count = int(values["JAVA_COUNT"])
         except (KeyError, ValueError):
-            fail("Windows failed-start listener check returned incomplete data.")
-        if tcp_count or udp_count:
-            fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
+            fail("Windows failed-start listener/process check returned incomplete data.")
+        if tcp_count or udp_count or java_count:
+            fail("Windows Minecraft TCP, Bedrock UDP, or Java server process remains active.")
     elif host == "ubuntu":
         listeners = run_command(["ss", "-H", "-ltn", f"sport = :{port}"])
         udp_listeners = run_command(["ss", "-H", "-lun", f"sport = :{bedrock_port}])
-        if listeners.strip() or udp_listeners.strip():
+        java_pids = java_processes_in_directory(directory)
+        if listeners.strip() or udp_listeners.strip() or java_pids:
             fail(
-                "Minecraft TCP or Bedrock UDP listener remains active. "
+                "Minecraft TCP, Bedrock UDP, or a Java process remains active. "
                 "Rollback is unsafe; the process was not killed."
             )
     else:
