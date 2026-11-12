@@ -214,3 +214,14 @@ Source: user-provided WSL command output.
 - The nine targeted tests are confirmed passing from the user's latest supplied batch. They do not currently exercise central cache integration or automatic host detection/routing.
 - Next source inspection must include `bin/hagonoy` and the AST-extracted definitions of `verify_running_server`, `start_managed_server`, `stop_managed_server`, `verify_core_update_runtime`, `update_core_server`, and CLI parser/main. Do not patch the lifecycle dispatcher until its full routing contract is visible.
 - Live update remains incomplete; no new server operation was performed during source inspection.
+
+## Dispatcher and host lifecycle findings — 2026-11-13
+
+- User supplied the actual `bin/hagonoy` dispatcher and AST-extracted functions from `bin/hagonoy-generation`.
+- WSL `./hagonoy update --plan|--execute` routes to `bin/hagonoy-dual-lifecycle update`. The standalone single-host Paper-only updater is a distinct legacy path; do not conflate it with the combined Paper/Geyser/Floodgate updater.
+- The dispatcher contains a duplicate `update)` case arm: the first routes to the dual lifecycle coordinator; the later rejection arm is unreachable. Avoid broad dispatcher refactoring, but account for this if editing that route.
+- The generation helper already has Windows runtime verification, Windows start.bat launch selection, and Windows listener checks in lifecycle helpers. The combined updater remains Ubuntu-only: it rejects non-Ubuntu manifests, hard-codes Ubuntu during runtime verification, and omits host arguments on stop/start/verification/rollback calls.
+- The dual-lifecycle wrapper only checks that Windows is stopped, then unconditionally invokes Ubuntu over SSH.
+- The combined updater downloads beside live JAR targets and does not use the central D: cache.
+- The archive omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`. These existing status/Windows scripts must be read before integrating host detection, to reuse the established status and generation semantics.
+- Nine targeted regression suites pass. Central-cache integration and active-host routing remain unimplemented and untested. No live server changes were made.
