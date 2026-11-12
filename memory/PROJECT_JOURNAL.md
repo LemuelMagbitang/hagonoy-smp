@@ -84,3 +84,14 @@ These commits changed memory/documentation only. They did not push the user's lo
 - Prepared hsmp-geyser-test-fixture-fix.zip, a test-only correction removing the experimental entry from that mock. The apply script was tested on a temporary copy and Python compilation succeeded. Not yet applied to the user's WSL checkout, and the actual test has not yet passed.
 - No production code, live server, JAR, plugin, world, datapack, or backup was changed by this diagnostic patch preparation.
 - Immediate next step: user downloads the test-only patch to D:\Hagonoy-SMP\server-update-downloads, applies from WSL, and reruns the new test plus existing focused updater/Paper suites.
+
+
+## 2026-11-13 — Geyser fixture fix passed; core API suite now fails
+
+- User applied the test-only fixture correction from `D:\Hagonoy-SMP\server-update-downloads\hsmp-geyser-test-fixture-fix.zip`.
+- Apply output: only `tests/dual-geyser-download-key-check.py` updated.
+- `python3 -m py_compile bin/hagonoy-generation` passed.
+- `python3 tests/dual-geyser-download-key-check.py` passed both URL assertions: Geyser build 1302 and Floodgate build 141 use API download key `spigot` in `/downloads/spigot`.
+- The subsequent `&&` chain stopped in its first suite, `bash tests/dual-core-update-api-check.sh`, with `File "<stdin>", line 48, AssertionError`. All later suites in the chain were skipped. Exact assertion is unknown; no diagnosis should be guessed. Next action: inspect the test around its embedded Python line and run with `bash -x`.
+- No live update was attempted; no server process, live JAR, plugin, world, datapack, or backup was changed by these tests.
+- User added a deferred cleanup requirement: after the server update is complete and verified, clean unnecessary files outside the structured Windows/Ubuntu server directories, including obsolete patch artifacts in `D:\Hagonoy-SMP\server-update-downloads`. Inventory and classify first; preserve required originals, current artifacts, rollback/recovery material until safe, and manager/server files. No deletion now.
