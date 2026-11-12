@@ -175,3 +175,13 @@ Next: apply the fixture correction from the central cache; run the URL regressio
 - Core updater downloads directly to temporary files adjacent to live server JAR/plugin JAR destinations. It does not populate/atomically refresh the designated D: central artifact cache. This requires a coordinator change: obtain and verify artifacts in the central cache first, transfer/re-verify on Ubuntu when selected, or use the local mounted Windows server path when Windows is selected; then run the host-specific transaction.
 - The nine targeted unit/regression suites passed, but they do not test either of these architectural requirements. Keep these gaps explicit; do not attempt a live update until addressed.
 - The source bundle did not include the dispatcher, so next inspect `bin/hagonoy` plus exact generation helper function bodies before editing.
+
+## Additional source findings — dispatcher and Windows lifecycle support
+
+- The WSL dispatcher routes `update --plan|--execute` to `bin/hagonoy-dual-lifecycle update`; standalone single-host Paper logic is separate.
+- The dispatcher has a duplicate unreachable `update)` arm after its active update route. If editing that section, remove or reconcile the dead branch without broad unrelated refactoring.
+- The generation helper supports Windows-specific runtime verification and start/stop behavior in some functions, but the combined core update is still Ubuntu-only: manifest host is hard-coded to ubuntu, runtime verification is hard-coded to ubuntu, and start/stop/rollback calls omit the host parameter.
+- The dual-lifecycle wrapper requires Ubuntu SSH config, checks only that Windows is stopped, then unconditionally targets Ubuntu.
+- Core artifacts are staged next to live server JARs rather than in `D:\\Hagonoy-SMP\\server-update-downloads`.
+- The source archive omitted `bin/hagonoy-dual-status` and `bin/hagonoy-dual-windows-lifecycle`. Inspect those existing scripts before finalizing active-host detection to reuse current host/generation semantics rather than invent a competing detector.
+- The nine existing regression suites pass but do not test central cache or active-host routing.
