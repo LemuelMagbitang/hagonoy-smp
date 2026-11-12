@@ -334,7 +334,7 @@ This roadmap is the current actionable order; it supersedes the earlier source-h
 The earlier isolated-source roadmap has now been implemented in a clean integration branch from current `main` and moved into the real manager paths.
 
 - Branch: `work/hsmp-updater-final-20261113` (14 ahead, 0 behind the current main base at branch creation).
-- Draft PR #4: https://github.com/LemuelMagbitang/hagonoy-smp/pull/4. Keep it separate from PR #2. PR is mergeable/clean but intentionally unmerged.
+- PR #4 is ready for review: https://github.com/LemuelMagbitang/hagonoy-smp/pull/4. Keep it separate from PR #2. PR is mergeable/clean but intentionally unmerged pending review and explicit approval.
 - Root production changes: `bin/hagonoy` routes `update --plan|--execute` through `bin/hagonoy-dual-core-update`; `bin/hagonoy-generation` now supports host-aware lifecycle/update/cache/probe/lineage actions; `bin/hagonoy-dual-lifecycle` invokes the core updater on its existing Ubuntu-only route; the new two-host coordinator selects the active host and manages cache staging/locks/rechecks.
 - Tests now live in root `tests/` and are called from `tests/syntax-check.sh`. Coverage includes runtime/version and Geyser/Floodgate metadata, cache hit/miss/corrupt-cache/atomic promotion, active-host lineage ambiguity, Windows route and stale generation refusal, core API/plan/combined success/rollback, and Paper updater/rollback regressions.
 - PR manager checks `43318480670` and PR shell tests `43318480563` passed at head `ec0172d9e82824b9a318c63295c0ca7017c7658b`.
