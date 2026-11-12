@@ -228,3 +228,16 @@ The current host routing is hard-coded in several layers, not just the initial m
 save() atomically replaces an existing generation manifest; save_new() atomically creates one without overwriting. Preserve these semantics and validate expected host/generation ID during the update lifecycle. No full backup is created by this transaction.
 
 The complete implementation patch must thread a required selected host through every lifecycle, verification, failed-start, and rollback call; add host/cache CLI inputs where appropriate; and connect the central cache/transfer preflight without weakening the existing transaction. No live update until dedicated host-routing/cache tests and a fresh plan pass.
+
+
+## Additional lifecycle safety requirements — 2026-11-13
+
+The lifecycle function excerpts confirm further host-specific fail-closed fixes:
+
+- start_managed_server() and stop_managed_server() accept a host value but do not assert that the loaded generation manifest's host matches it. Require exact host/manifest agreement before any state transition, idempotent return, or shutdown.
+- verify_stopped_server() must also require the manifest host to match the selected host.
+- mark_failed_start_stopped() currently hard-codes Linux tmux + ss TCP checks and has no host argument. Add host selection and require both Java TCP and Bedrock UDP absence on that host before finishing/reconciling the generation.
+- stop_managed_server() currently requires TCP and Bedrock UDP to clear on Windows, but Ubuntu only checks TCP. Require both protocols on Ubuntu too.
+- start-server and stop-server CLI already expose --host; core-update CLI still needs a host argument plus a designed artifact-staging/cache interface.
+
+These changes are part of the same required patch as central cache and active-host detection. No live update before Windows/Ubuntu recovery paths and rollback are explicitly host-aware and tested.
