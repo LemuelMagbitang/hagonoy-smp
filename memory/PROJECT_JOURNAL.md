@@ -282,3 +282,13 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Commit succeeded locally: `dbef9ed` on branch `fix/border-console-pane-and-parser-20261111`, message `Add current WSL dispatcher to updater source snapshot`.
 - Push failed with Git's expected no-upstream message. Recommended next command: `git push --set-upstream origin fix/border-console-pane-and-parser-20261111`.
 - Commit is already created; do not repeat. File is not yet confirmed published to GitHub. No Minecraft server operation or live server-file change occurred.
+
+## 2026-11-13 — Dispatcher pushed; exact 16-file source snapshot assembled
+
+- User successfully pushed commit `dbef9edcb4e9dc4c8cbc71f43bceee5a958acad6` to `origin/fix/border-console-pane-and-parser-20261111`; upstream branch setup completed.
+- Confirmed the feature branch's handoff directory had only the dispatcher file, while the earlier 12-file extracted set was on main and three dual-host support scripts were at root/main.
+- Created isolated `work/hsmp-updater-source-20261113` from main and assembled the exact expected 16 files under `server-files-copy/hsmp-updater-current-source/` by copying the missing dispatcher and dual-host support scripts from their authoritative refs.
+- Caught an important mismatch: root/main `bin/hagonoy` is not the same blob as the current WSL dispatcher. Replaced the first copy with the exact handoff file from the user's branch (`596feac642ad7e73b25500d297e1e880c1c26938`, 48,686 bytes).
+- Recursive GitHub tree verification confirms 16 files exactly and expected path names. Original user branch and root/main manager source were not changed; only an isolated handoff copy branch was assembled.
+- This turn only verified/published source copies. No updater implementation patch or tests were run. No live server status/plan or server operation occurred.
+- Next is the consolidated implementation using this exact source snapshot; no more user source dumps/attachments should be requested. Preserve the user's current working branch and require explicit approval before applying/committing changes to active manager source paths.
