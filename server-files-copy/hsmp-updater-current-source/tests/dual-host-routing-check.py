@@ -74,4 +74,24 @@ else:
     raise AssertionError("Mismatched host identity was accepted.")
 print("[OK] Rejects mismatched manifest host identity.")
 
+print("========== CANONICAL JAVA PROCESS DETECTION ==========")
+import tempfile
+with tempfile.TemporaryDirectory(prefix="hsmp-proc-scan-") as temporary:
+    root = Path(temporary)
+    server = root / "canonical-server"
+    other = root / "other-server"
+    proc = root / "proc"
+    fake_java = root / "java"
+    server.mkdir()
+    other.mkdir()
+    proc.mkdir()
+    fake_java.write_text("fixture", encoding="utf-8")
+    process = proc / "4321"
+    process.mkdir()
+    (process / "exe").symlink_to(fake_java)
+    (process / "cwd").symlink_to(server)
+    assert module.java_processes_in_directory(server, str(proc)) == ["4321"]
+    assert module.java_processes_in_directory(other, str(proc)) == []
+    print("[OK] Detects a detached Java process in the canonical server directory and ignores another directory.")
+
 print("[DONE] Dual-host routing and generation-lineage tests passed.")
