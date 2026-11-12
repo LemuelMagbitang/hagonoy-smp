@@ -607,16 +607,23 @@ def java_processes_in_directory(directory, proc_root="/proc"):
         if not process.name.isdigit():
             continue
         try:
-            executable = Path(os.readlink(process / "exe")).name.removesuffix(" (deleted)")
-            working_directory = Path(os.readlink(process / "cwd")).resolve(strict=True)
+            command_name = (process / "comm").read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             # The process exited while /proc was being enumerated.
             continue
         except PermissionError as exc:
-            fail(f"Cannot verify process {process.name} while proving the server is stopped: {exc}")
+            fail(f"Cannot identify process {process.name} while proving the server is stopped: {exc}")
+        if command_name not in ("java", "javaw"):
+            continue
+        try:
+            working_directory = Path(os.readlink(process / "cwd")).resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        except PermissionError as exc:
+            fail(f"Cannot verify Java process {process.name} while proving the server is stopped: {exc}")
         except OSError:
             continue
-        if executable == "java" and working_directory == directory:
+        if working_directory == directory:
             matches.append(process.name)
     return sorted(set(matches))
 
