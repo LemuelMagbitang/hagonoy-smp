@@ -1749,18 +1749,19 @@ def verify_cached_core_artifact(key, metadata, cache_path, minecraft_version):
 
 
 def populate_core_artifact_cache(cache_directory, minecraft_version, components, user_agent):
-    if minecraft_version not in ("AUTO",) and not re.fullmatch(r"\\d+(?:\\.\\d+){1,2}", minecraft_version):
+    if minecraft_version not in ("AUTO",) and not re.fullmatch(r"\d+(?:\.\d+){1,2}", minecraft_version):
         fail("Invalid Minecraft version for central artifact cache.")
     requested = set(components)
-    if not requested.issubset({"geyser", "floodgate"}):
-        fail("Only the already-installed managed Geyser/Floodgate components may be cached.")
+    if not requested or not requested.issubset({"paper", "geyser", "floodgate"}):
+        fail("Cache request must name Paper and/or already-installed Geyser/Floodgate components.")
     cache_directory = Path(cache_directory)
     if cache_directory.exists() and cache_directory.is_symlink():
         fail("Central artifact cache directory cannot be a symlink.")
     cache_directory.mkdir(parents=True, exist_ok=True)
     cache_directory = cache_directory.resolve(strict=True)
-    paper = fetch_paper_stable_build(minecraft_version, user_agent)
-    targets = [("paper", paper)]
+    targets = []
+    if "paper" in requested:
+        targets.append(("paper", fetch_paper_stable_build(minecraft_version, user_agent)))
     for project in ("geyser", "floodgate"):
         if project in requested:
             targets.append((project, fetch_geysermc_default_build(project, user_agent)))
