@@ -147,7 +147,7 @@ elif action == "stop":
     ]
 elif action == "update":
     argv += [
-        "paper-update", directory,
+        "core-update", directory,
         "--session", session,
         "--port", port,
         "--ready-pattern", ready,
@@ -233,10 +233,10 @@ if ids[-1] != data.get("generation_id"):
 if expected_state == "running":
     if action == "update":
         if not (
-            "PAPER_UPDATE=SUCCESS" in operation
-            or "PAPER_UPDATE=ALREADY_CURRENT" in operation
+            "CORE_UPDATE=SUCCESS" in operation
+            or "CORE_UPDATE=ALREADY_CURRENT" in operation
         ):
-            raise SystemExit("No confirmed Paper update result was reported.")
+            raise SystemExit("No confirmed HSMP core update result was reported.")
     elif not (
         "SERVER_ALREADY_RUNNING" in operation
         or "START=READY" in operation
@@ -275,7 +275,7 @@ case "$ACTION" in
         expected_state="stopped"
         ;;
     update)
-        echo "========== DUAL-HOST PAPER UPDATE =========="
+        echo "========== DUAL-HOST HSMP CORE UPDATE =========="
         echo "Mode: $UPDATE_MODE"
         echo "Target: Ubuntu canonical server"
         echo "Minecraft version will remain unchanged."
@@ -285,19 +285,20 @@ case "$ACTION" in
         ;;
 esac
 
+
 if [[ "$ACTION" == "update" && "$UPDATE_MODE" == "--execute" ]]; then
     [[ -t 0 && -r /dev/tty ]] ||
-        die "Paper update execution requires an interactive terminal."
+        die "HSMP core update execution requires an interactive terminal."
 
     echo
-    echo "This will download and verify a stable Paper build for the current Minecraft version."
+    echo "This will update Paper to its latest stable build and only already-installed Geyser/Floodgate plugins to newer official default-channel builds."
     echo "It will gracefully stop and restart Ubuntu Minecraft."
-    echo "The previous server.jar will be retained for rollback."
-    echo "No TAR backup or plugin/config update will be performed."
-    printf 'To authorize this update, type UPDATE-UBUNTU-PAPER: '
+    echo "Only the JARs being replaced are held temporarily outside the server directory for rollback, then removed after confirmed success/recovery."
+    echo "No full backup, unrelated plugin changes, plugin/config deployment, datapack operation, or component installation will be performed."
+    printf 'To authorize this update, type UPDATE-UBUNTU-HSMP: '
     IFS= read -r confirmation < /dev/tty
 
-    [[ "$confirmation" == "UPDATE-UBUNTU-PAPER" ]] ||
+    [[ "$confirmation" == "UPDATE-UBUNTU-HSMP" ]] ||
         die "Confirmation did not match. No update was started."
 fi
 
@@ -315,13 +316,14 @@ else
 fi
 
 if [[ "$ACTION" == "update" && "$UPDATE_MODE" == "--plan" ]]; then
-    grep -Fq "RESULT=READY_FOR_PAPER_UPDATE" "$TMP_DIR/operation.log" ||
-        die "Paper update plan did not reach its ready result."
+    grep -Fq "RESULT=READY_FOR_CORE_UPDATE" "$TMP_DIR/operation.log" ||
+        die "HSMP core update plan did not reach its ready result."
     echo
-    echo "PAPER_UPDATE_PLAN=READY"
-    echo "No manifest change or server restart was performed."
+    echo "CORE_UPDATE_PLAN=READY"
+    echo "No manifest change, datapack installation, or server restart was performed."
     exit 0
 fi
+
 
 verify_readback "$expected_state"
 
