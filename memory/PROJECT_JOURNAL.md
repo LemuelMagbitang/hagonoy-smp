@@ -248,3 +248,11 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - The ZIP bytes were not attached in the chat and are not present in the assistant runtime based only on this path. No independent checksum verification or archive inspection has occurred.
 - The current work phase is source handoff before consolidated patch implementation. Required design inspections are complete; previous nine updater/Paper/Geyser checks are the last confirmed test baseline. No patch, fresh plan, or live update has been performed from this bundle.
 - Next: attach the ZIP, verify digest and file list, patch host selection/cache transport/lifecycle/rollback together, batch tests, then make a read-only plan. Request explicit live-update authorization only after all gates pass.
+
+## 2026-11-13 — Exact source ZIP not attached to active session
+
+- User asked to continue with a fast and intelligent approach while ensuring the Minecraft server remains healthy.
+- Checked active runtime paths for the WSL D: archive and `/mnt/data` upload location. The ZIP is not present in this session and there are no uploaded files mounted.
+- This is an access blocker, not a source-code or server blocker. The user's local archive path and reported digest have not been independently verified here.
+- No speculative source patch was made. GitHub documentation is updated, but remote default-branch source is not an authorized substitute for the current unpushed WSL worktree. No test or live status command was run; no live server/JAR/plugin/world/datapack/backup was altered.
+- Next: attach the archive; independently verify hash/contents; implement one consolidated patch; batch both-host/cache/rollback tests and existing tests; run a read-only live plan; seek explicit live-update approval only after the plan passes.
