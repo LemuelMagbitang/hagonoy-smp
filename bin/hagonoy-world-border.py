@@ -259,10 +259,10 @@ def display_plan(
         print(f"{LABELS[dimension]}:")
         print(f"  Current diameter: {now:g}")
         print(f"  Planned diameter: {target:g} ({change})")
-        print(f"  Center preserved: X {center[0]}, Z {center[1]} (not modified)")
+        print(f"  Center reference: X {center[0]}, Z {center[1]} (not queried or modified)")
     print(f"End:")
     print(f"  Current diameter: {end_width:g} (independent; will not be changed)")
-    print(f"  Center preserved: X {CENTERS[END][0]}, Z {CENTERS[END][1]} (not modified)")
+    print(f"  Center reference: X {CENTERS[END][0]}, Z {CENTERS[END][1]} (not queried or modified)")
     if initializing:
         print()
         print("No world-border command is needed. --apply will record the current verified widths as the baseline.")
