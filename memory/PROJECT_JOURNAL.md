@@ -313,3 +313,14 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Completion sequence: fail-closed active-host detector; host-aware generation/lifecycle/runtime/update/rollback paths; central D: artifact cache plus Windows-local and Ubuntu-transfer deployments with destination re-verification; then batched two-host/failure-path regression tests while retaining all existing tests.
 - Final gates: fresh read-only plan must show the correctly detected host, generation and cache/deploy destinations; explicit separate authorization before any live execution; graceful transaction and same-host readiness/runtime verification; inactive peer stays stopped. Do not automatically create a full backup or touch unrelated plugins, datapacks, worlds or config.
 - No code changes, commits, PRs, live operation or server data changes were made as part of this planning response.
+
+
+## 2026-11-13 — Core updater integrated into root manager and PR checks passed
+
+- User reported the live server is running and still accepts joins. This was treated as the user's status report; the assistant performed no live host probes or server operations.
+- Built a new integration branch from current main: `work/hsmp-updater-final-20261113`. Transplanted the validated updater into root `bin/hagonoy`, `bin/hagonoy-generation`, `bin/hagonoy-dual-lifecycle`, and new `bin/hagonoy-dual-core-update`; placed its regression tests in root `tests/` and wired them into `tests/syntax-check.sh`.
+- Implemented fail-closed active-host selection using both canonical host probes and manifest generation ancestry; host-aware lifecycle and rollback; Java process, canonical working-directory, Minecraft TCP and Bedrock UDP checks; active-generation rechecks; inactive-host lifecycle reservation; and D: central verified cache with remote Ubuntu staging/reverification.
+- The core updater still updates only Paper and exact recognized already-installed Geyser-Spigot/Floodgate components. Missing plugins are skipped. Unrelated server content and datapack workflows remain separate. No full backup is automatically created.
+- Opened PR #4 against main and marked it ready for review after the checks passed: https://github.com/LemuelMagbitang/hagonoy-smp/pull/4. Final branch compare: 17 commits ahead, 0 behind; GitHub reported conflict-free/mergeable. PR #2 remains separate.
+- PR checks passed at head `ec0172d9e82824b9a318c63295c0ca7017c7658b`: manager checks run `43318480670` and shell tests run `43318480563`. The shell workflow passed restore safeguards, Playit detection, core API/plan/cache/lineage/Windows-route/transaction tests, and Paper updater/rollback tests.
+- No live plan/update, server stop/start, backup, cache cleanup, plugin/datapack/world/config modification, or host sync was performed. Next: review PR #4; merge only with explicit approval; then fresh read-only plan and separate explicit approval for any live update.

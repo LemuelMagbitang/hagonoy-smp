@@ -13,5 +13,21 @@ python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text
 printf '[OK] bin/hagonoy-world-border.py (Python syntax)\n'
 python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-addons.py"
 printf '[OK] bin/hagonoy-addons.py (Python syntax)\n'
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-generation"
+printf '[OK] bin/hagonoy-generation (Python syntax)\n'
+bash -n "$ROOT/bin/hagonoy-dual-core-update"
+printf '[OK] bin/hagonoy-dual-core-update (shell syntax)\n'
+python3 "$ROOT/tests/dual-runtime-version-probe-check.py"
+python3 "$ROOT/tests/dual-geyser-download-key-check.py"
+python3 "$ROOT/tests/dual-host-routing-check.py"
+python3 "$ROOT/tests/dual-host-core-route-check.py"
+python3 "$ROOT/tests/dual-core-update-cache-check.py"
+bash "$ROOT/tests/dual-core-update-api-check.sh"
+bash "$ROOT/tests/dual-core-update-plan-check.sh"
+bash "$ROOT/tests/dual-core-update-execution-check.sh"
+bash "$ROOT/tests/dual-paper-update-api-check.sh"
+bash "$ROOT/tests/dual-paper-update-plan-check.sh"
+bash "$ROOT/tests/dual-paper-update-execution-check.sh"
+
 python3 "$ROOT/tests/maintenance-tools-check.py"
 

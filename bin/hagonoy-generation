@@ -10,7 +10,10 @@ import re
 import subprocess
 import time
 import sys
+import tempfile
 import uuid
+import zipfile
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +45,8 @@ def load(directory):
         fail("Unsupported generation manifest schema.")
     if data.get("state") not in ("running", "stopped"):
         fail("Invalid generation state.")
+    if data.get("host") not in ("ubuntu", "windows"):
+        fail("Generation manifest has an invalid or missing host identity.")
 
     generation = data.get("generation")
     if (not isinstance(generation, int) or isinstance(generation, bool)
@@ -138,7 +143,72 @@ def run_command(command):
 
 
 
-def verify_running_server_windows(directory, paper, minecraft, session, port):
+def query_runtime_versions_from_console(session):
+    """Read fresh Paper/Minecraft versions from the live tmux console."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        fail("Invalid tmux session name for live version query.")
+
+    target = f"={session}:0.0"
+    marker = "Checking version, please wait..."
+    paper_marker = "This server is running Paper version"
+
+    def capture():
+        # Join tmux soft-wrapped console lines before parsing. Paper's version
+        # banner can exceed the pane width, especially on 26.x builds.
+        return run_command([
+            "tmux", "capture-pane", "-p", "-J", "-t", target, "-S", "-2000"
+        ])
+
+    # Take a baseline so an old /version response can never satisfy this probe.
+    before = capture()
+    before_marker_count = before.count(marker)
+    before_paper_count = before.count(paper_marker)
+
+    run_command(["tmux", "send-keys", "-t", target, "version", "Enter"])
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        output = capture()
+        lines = output.splitlines()
+        marker_indexes = [
+            index for index, line in enumerate(lines) if marker in line
+        ]
+        paper_count = output.count(paper_marker)
+
+        # Require both a newly-issued version check and its new Paper response.
+        if (
+            len(marker_indexes) > before_marker_count
+            and paper_count > before_paper_count
+        ):
+            fresh_response = "\n".join(lines[marker_indexes[-1]:])
+            paper_matches = re.findall(
+                r"This server is running Paper version\s+(\S+)",
+                fresh_response,
+                flags=re.IGNORECASE,
+            )
+            if paper_matches:
+                paper_version = paper_matches[-1]
+                # Paper's version prefix identifies the Minecraft release:
+                # 26.3-244-main@commit, 1.21.11-72-main@commit, etc.
+                # Do not parse the API suffix: modern Paper uses values such
+                # as 26.3.build.244-stable, while older releases used
+                # 1.21.4-R0.1-SNAPSHOT. That API format is not needed here.
+                minecraft_match = re.match(
+                    r"^(\d+(?:\.\d+){1,2})-\d+(?:-|$)",
+                    paper_version,
+                )
+                if minecraft_match:
+                    return paper_version, minecraft_match.group(1)
+
+        time.sleep(0.25)
+
+    fail(
+        "Could not obtain a fresh Paper /version response from "
+        f"tmux pane {target}; refusing to infer versions from the manifest."
+    )
+
+
+def verify_running_server_windows(directory, paper, minecraft, session, port, bedrock_port=19132):
     directory = Path(directory).resolve(strict=True)
     if not directory.is_dir():
         fail("Windows server directory is invalid.")
@@ -146,20 +216,45 @@ def verify_running_server_windows(directory, paper, minecraft, session, port):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
         fail("Invalid Windows tmux session.")
 
+    try:
+        windows_directory = run_command(["wslpath", "-w", str(directory)])
+    except RuntimeError as exc:
+        fail(f"Cannot translate Windows canonical directory for process verification: {exc}")
+    windows_directory = windows_directory.replace("'", "''")
+
     ps = f"""
 $ErrorActionPreference = 'Stop'
+$expected = [IO.Path]::GetFullPath('{windows_directory}')
 $t = @(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue)
-$u = @(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue)
+$u = @(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue)
 $ids = @($t | Select-Object -ExpandProperty OwningProcess -Unique)
+$udpIds = @($u | Select-Object -ExpandProperty OwningProcess -Unique)
 $j = 0
+$cwd = 0
+$udpJava = 0
+if ($ids.Count -eq 1 -and $udpIds.Count -eq 1 -and $ids[0] -eq $udpIds[0]) {{ $udpJava = 1 }}
 if ($ids.Count -eq 1) {{
-  $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($ids[0])"
-  if ($p -and ([IO.Path]::GetFileName($p.ExecutablePath) -match '^(?i:javaw?)\\.exe$') -and ($p.CommandLine -match '(?i)server\\.jar')) {{ $j = 1 }}
+  $serverPid = [int]$ids[0]
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId = $serverPid"
+  if ($p -and ([IO.Path]::GetFileName($p.ExecutablePath) -match '^(?i:javaw?)\\.exe$') -and ($p.CommandLine -match '(?i)server\\.jar')) {{
+    $j = 1
+    $jcmd = Join-Path (Split-Path -Parent $p.ExecutablePath) 'jcmd.exe'
+    if (Test-Path -LiteralPath $jcmd) {{
+      $props = & $jcmd $serverPid VM.system_properties 2>$null
+      $userDirLine = $props | Where-Object {{ $_ -match '^user\\.dir=' }} | Select-Object -First 1
+      if ($userDirLine) {{
+        $actual = [IO.Path]::GetFullPath($userDirLine.Substring(9))
+        if ($actual.TrimEnd('\\') -ieq $expected.TrimEnd('\\')) {{ $cwd = 1 }}
+      }}
+    }}
+  }}
 }}
 "TCP=$($t.Count)"
 "UDP=$($u.Count)"
 "PIDS=$($ids.Count)"
 "JAVA=$j"
+"CWD=$cwd"
+"UDPJAVA=$udpJava"
 """
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -177,8 +272,10 @@ if ($ids.Count -eq 1) {{
     except (KeyError, ValueError):
         fail("Windows process verification returned incomplete data.")
 
-    if tcp < 1 or udp < 1 or pids != 1 or values.get("JAVA") != "1":
-        fail("Windows Java server or Bedrock listener could not be verified.")
+    if (tcp < 1 or udp < 1 or pids != 1
+            or values.get("JAVA") != "1" or values.get("CWD") != "1"
+            or values.get("UDPJAVA") != "1"):
+        fail("Windows Java process, canonical working directory, or Bedrock listener could not be verified.")
 
     run_command(["tmux", "has-session", "-t", f"={session}"])
     panes = run_command([
@@ -193,19 +290,17 @@ if ($ids.Count -eq 1) {{
         fail("Windows tmux working directory does not match canonical server.")
 
     log_path = directory / "logs" / "latest.log"
-    if not log_path.is_file():
-        fail("Windows latest.log is missing.")
-
     mc = pr = None
-    with log_path.open(encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            m = re.search(r"Starting minecraft server version\s+(\S+)", line)
-            q = re.search(r"This server is running Paper version\s+(\S+)", line)
-            if m: mc = m.group(1)
-            if q: pr = q.group(1)
+    if log_path.is_file():
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                m = re.search(r"Starting minecraft server version\s+(\S+)", line)
+                q = re.search(r"This server is running Paper version\s+(\S+)", line)
+                if m: mc = m.group(1)
+                if q: pr = q.group(1)
 
     if not mc or not pr:
-        fail("Windows Minecraft/Paper versions cannot be verified.")
+        pr, mc = query_runtime_versions_from_console(session)
     if minecraft != "AUTO" and minecraft != mc:
         fail("Windows Minecraft version mismatch.")
     if paper != "AUTO" and paper != pr:
@@ -221,25 +316,29 @@ if ($ids.Count -eq 1) {{
 
 def verify_running_server(
     directory, host, paper, minecraft, session, port,
-    proc_root="/proc", require_manifest_absent=True
+    proc_root="/proc", require_manifest_absent=True, bedrock_port=19132
 ):
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported runtime host: {host}")
+    directory = Path(directory).resolve(strict=True)
+    if require_manifest_absent:
+        manifest = directory / FILENAME
+        if manifest.exists() or manifest.is_symlink():
+            fail("Generation manifest already exists. Refusing adoption.")
+    else:
+        managed_manifest = load(directory)
+        if managed_manifest is None or managed_manifest.get("host") != host:
+            fail(f"Generation manifest host does not match requested runtime host {host}.")
+        if managed_manifest.get("state") != "running":
+            fail("Generation manifest is not RUNNING for runtime verification.")
+
     if host == "windows":
         return verify_running_server_windows(
-            directory, paper, minecraft, session, port
+            directory, paper, minecraft, session, port, bedrock_port
         )
-    if host != "ubuntu":
-        fail(f"Unsupported runtime host: {host}")
-
-    directory = Path(directory).resolve(strict=True)
 
     if not directory.is_dir():
         fail("Server path is not a directory.")
-
-    manifest = directory / FILENAME
-    if require_manifest_absent and (
-        manifest.exists() or manifest.is_symlink()
-    ):
-        fail("Generation manifest already exists. Refusing adoption.")
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
         fail("Invalid tmux session name.")
@@ -314,34 +413,40 @@ def verify_running_server(
             f"{process_cwd}"
         )
 
-    # Derive versions from the current server log and optionally compare
-    # them with explicitly supplied expected versions.
-    log_path = directory / "logs" / "latest.log"
-    if not log_path.is_file():
-        fail(f"Missing server log: {log_path}")
+    udp_listeners = run_command([
+        "ss", "-H", "-lunp", f"sport = :{bedrock_port}"
+    ])
+    udp_pids = set(re.findall(r"\bpid=(\d+)\b", udp_listeners))
+    if udp_pids != {pid}:
+        fail(f"Bedrock UDP port {bedrock_port} is not owned by the verified Java process.")
 
+    # Prefer startup banners when present. They may have rotated out of
+    # latest.log, so query the live console for a fresh, independently
+    # observed version rather than trusting the generation manifest alone.
+    log_path = directory / "logs" / "latest.log"
     minecraft_version = None
     paper_version = None
 
-    try:
-        with log_path.open(encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                match = re.search(
-                    r"Starting minecraft server version\s+(\S+)", line
-                )
-                if match:
-                    minecraft_version = match.group(1)
+    if log_path.is_file():
+        try:
+            with log_path.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    match = re.search(
+                        r"Starting minecraft server version\s+(\S+)", line
+                    )
+                    if match:
+                        minecraft_version = match.group(1)
 
-                match = re.search(
-                    r"This server is running Paper version\s+(\S+)", line
-                )
-                if match:
-                    paper_version = match.group(1)
-    except OSError as exc:
-        fail(f"Cannot read server log: {exc}")
+                    match = re.search(
+                        r"This server is running Paper version\s+(\S+)", line
+                    )
+                    if match:
+                        paper_version = match.group(1)
+        except OSError as exc:
+            fail(f"Cannot read server log: {exc}")
 
     if not minecraft_version or not paper_version:
-        fail("Could not establish both Paper and Minecraft versions from the log.")
+        paper_version, minecraft_version = query_runtime_versions_from_console(session)
 
     if minecraft != "AUTO" and minecraft != minecraft_version:
         fail(
@@ -494,12 +599,43 @@ def validate_lifecycle_args(directory, session, port, timeout):
     return directory
 
 
-def verify_stopped_server(directory, session, port, host="ubuntu"):
+def java_processes_in_directory(directory, proc_root="/proc"):
+    """Return Java PIDs whose real process working directory is the server directory."""
+    directory = Path(directory).resolve(strict=True)
+    matches = []
+    for process in Path(proc_root).glob("[0-9]*"):
+        if not process.name.isdigit():
+            continue
+        try:
+            command_name = (process / "comm").read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            # The process exited while /proc was being enumerated.
+            continue
+        except PermissionError as exc:
+            fail(f"Cannot identify process {process.name} while proving the server is stopped: {exc}")
+        if command_name not in ("java", "javaw"):
+            continue
+        try:
+            working_directory = Path(os.readlink(process / "cwd")).resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        except PermissionError as exc:
+            fail(f"Cannot verify Java process {process.name} while proving the server is stopped: {exc}")
+        except OSError:
+            continue
+        if working_directory == directory:
+            matches.append(process.name)
+    return sorted(set(matches))
+
+
+def verify_stopped_server(directory, session, port, host="ubuntu", bedrock_port=19132):
     directory = Path(directory).resolve(strict=True)
     data = load(directory)
 
     if data is None:
         fail("No generation manifest exists.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested stopped-state host {host}.")
     if data["state"] != "stopped":
         fail("Manifest is not STOPPED. Refusing to start another generation.")
 
@@ -516,8 +652,9 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
         ps = (
             "$ErrorActionPreference='Stop'; "
             f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
-            "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
-            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+            f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
+            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_SERVER_PROCESSES='+$j"
         )
         try:
             result = subprocess.run(
@@ -537,11 +674,12 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
         try:
             tcp_count = int(values["TCP_COUNT"])
             udp_count = int(values["UDP_COUNT"])
+            java_server_processes = int(values["JAVA_SERVER_PROCESSES"])
         except (KeyError, ValueError):
-            fail("Windows listener check returned incomplete data.")
+            fail("Windows listener/process check returned incomplete data.")
 
-        if tcp_count or udp_count:
-            fail("Windows Minecraft TCP or Bedrock UDP listener remains active.")
+        if tcp_count or udp_count or java_server_processes:
+            fail("Windows Minecraft TCP, Bedrock UDP, or Java server process remains active.")
         return data
 
     if host != "ubuntu":
@@ -550,13 +688,22 @@ def verify_stopped_server(directory, session, port, host="ubuntu"):
     listeners = run_command([
         "ss", "-H", "-ltn", f"sport = :{port}"
     ])
-    if listeners.strip():
-        fail(f"Minecraft TCP port {port} is still listening.")
+    udp_listeners = run_command([
+        "ss", "-H", "-lun", f"sport = :{bedrock_port}"
+    ])
+    if listeners.strip() or udp_listeners.strip():
+        fail("Minecraft TCP or Bedrock UDP listener remains active.")
+    java_pids = java_processes_in_directory(directory)
+    if java_pids:
+        fail(
+            "A Java process is still running from the canonical Minecraft directory: "
+            + ", ".join(java_pids)
+        )
 
     return data
 
 
-def start_managed_server(directory, session, port, ready_pattern, timeout, host='ubuntu'):
+def start_managed_server(directory, session, port, ready_pattern, timeout, host='ubuntu', bedrock_port=19132):
     directory = validate_lifecycle_args(
         directory, session, port, timeout
     )
@@ -570,12 +717,14 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
     data = load(directory)
     if data is None:
         fail("No generation manifest. Initial adoption must be performed first.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested start host {host}.")
 
     # Idempotent start: do not create a generation if the server is already live.
     if data["state"] == "running":
         runtime = verify_running_server(
             directory, host, "AUTO", "AUTO",
-            session, port, require_manifest_absent=False
+            session, port, require_manifest_absent=False, bedrock_port=bedrock_port
         )
         print("SERVER_ALREADY_RUNNING")
         print(f"GENERATION={data['generation']}")
@@ -586,7 +735,7 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
     if data["state"] != "stopped":
         fail("Manifest state is uncertain. Refusing to start.")
 
-    verify_stopped_server(directory, session, port, host=host)
+    verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
 
     server_jar = directory / "server.jar"
     log_path = directory / "logs" / "latest.log"
@@ -668,7 +817,7 @@ def start_managed_server(directory, session, port, ready_pattern, timeout, host=
             try:
                 runtime = verify_running_server(
                     directory, host, "AUTO", "AUTO",
-                    session, port, require_manifest_absent=False
+                    session, port, require_manifest_absent=False, bedrock_port=bedrock_port
                 )
             except RuntimeError as exc:
                 elapsed = int(time.monotonic() - started_at)
@@ -771,7 +920,7 @@ def get_tmux_pane_target(session):
     return target
 
 
-def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
+def stop_managed_server(directory, session, port, timeout, host='ubuntu', bedrock_port=19132):
     directory = validate_lifecycle_args(
         directory, session, port, timeout
     )
@@ -782,10 +931,12 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
     data = load(directory)
     if data is None:
         fail("No generation manifest exists.")
+    if data.get("host") != host:
+        fail(f"Generation manifest host does not match requested stop host {host}.")
 
     # Idempotent stop: a verified stopped server requires no new transition.
     if data["state"] == "stopped":
-        verify_stopped_server(directory, session, port, host=host)
+        verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
         print("SERVER_ALREADY_STOPPED")
         print(f"GENERATION={data['generation']}")
         print(f"GENERATION_ID={data['generation_id']}")
@@ -796,7 +947,7 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
 
     runtime = verify_running_server(
         directory, host, "AUTO", "AUTO",
-        session, port, require_manifest_absent=False
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
     )
 
     pane_target = get_tmux_pane_target(session)
@@ -840,8 +991,9 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
             ps = (
                 "$ErrorActionPreference='Stop'; "
                 f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
-                "$u=@(Get-NetUDPEndpoint -LocalPort 19132 -ErrorAction SilentlyContinue).Count; "
-                "'TCP_COUNT='+$t; 'UDP_COUNT='+$u"
+                f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
+                "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
+                "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_COUNT='+$j"
             )
             try:
                 listener_result = subprocess.run(
@@ -864,15 +1016,24 @@ def stop_managed_server(directory, session, port, timeout, host='ubuntu'):
             try:
                 tcp_count = int(values["TCP_COUNT"])
                 udp_count = int(values["UDP_COUNT"])
+                java_count = int(values["JAVA_COUNT"])
             except (KeyError, ValueError):
-                fail("Windows listener check returned incomplete data.")
+                fail("Windows listener/process check returned incomplete data.")
 
-            listeners_clear = tcp_count == 0 and udp_count == 0
+            listeners_clear = tcp_count == 0 and udp_count == 0 and java_count == 0
         else:
             listeners = run_command([
                 "ss", "-H", "-ltn", f"sport = :{port}"
             ])
-            listeners_clear = not listeners.strip()
+            udp_listeners = run_command([
+                "ss", "-H", "-lun", f"sport = :{bedrock_port}"
+            ])
+            java_pids = java_processes_in_directory(directory)
+            listeners_clear = (
+                not listeners.strip()
+                and not udp_listeners.strip()
+                and not java_pids
+            )
 
         if session_result.returncode == 1 and listeners_clear:
             current = load(directory)
@@ -1076,36 +1237,1094 @@ def sync_directory(directory):
         os.close(descriptor)
 
 
-def mark_failed_start_stopped(directory, session, port, expected_generation_id):
+def mark_failed_start_stopped(directory, session, port, expected_generation_id, host="ubuntu", bedrock_port=19132):
+    directory = Path(directory).resolve(strict=True)
+    data = load(directory)
+    if data is None or data.get("host") != host:
+        fail("Generation manifest host does not match failed-start recovery host.")
+    if data.get("state") != "running" or data.get("generation_id") != expected_generation_id:
+        fail("Generation metadata changed; failed-start reconciliation is unsafe.")
+
     session_result = probe_command([
         "tmux", "has-session", "-t", f"={session}"
     ])
-
     if session_result.returncode != 1:
         fail(
             "Cannot prove the failed update process has stopped. "
             "Rollback is unsafe; inspect the server manually."
         )
 
-    listeners = run_command([
-        "ss", "-H", "-ltn", f"sport = :{port}"
-    ])
-
-    if listeners.strip():
-        fail(
-            "Minecraft still owns its listening port. "
-            "Rollback is unsafe; the process was not killed."
+    if host == "windows":
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            f"$t=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue).Count; "
+            f"$u=@(Get-NetUDPEndpoint -LocalPort {bedrock_port} -ErrorAction SilentlyContinue).Count; "
+            "$j=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '(?i)javaw?[.]exe$' -and $_.CommandLine -match '(?i)server[.]jar' }).Count; "
+            "'TCP_COUNT='+$t; 'UDP_COUNT='+$u; 'JAVA_COUNT='+$j"
         )
-
-    data = load(directory)
-    if (
-        data is None
-        or data["state"] != "running"
-        or data["generation_id"] != expected_generation_id
-    ):
-        fail("Generation metadata changed; failed-start reconciliation is unsafe.")
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            fail("Windows failed-start listener check failed: " + result.stderr.strip())
+        values = dict(
+            line.strip().split("=", 1)
+            for line in result.stdout.splitlines() if "=" in line
+        )
+        try:
+            tcp_count, udp_count = int(values["TCP_COUNT"]), int(values["UDP_COUNT"])
+            java_count = int(values["JAVA_COUNT"])
+        except (KeyError, ValueError):
+            fail("Windows failed-start listener/process check returned incomplete data.")
+        if tcp_count or udp_count or java_count:
+            fail("Windows Minecraft TCP, Bedrock UDP, or Java server process remains active.")
+    elif host == "ubuntu":
+        listeners = run_command(["ss", "-H", "-ltn", f"sport = :{port}"])
+        udp_listeners = run_command(["ss", "-H", "-lun", f"sport = :{bedrock_port}"])
+        java_pids = java_processes_in_directory(directory)
+        if listeners.strip() or udp_listeners.strip() or java_pids:
+            fail(
+                "Minecraft TCP, Bedrock UDP, or a Java process remains active. "
+                "Rollback is unsafe; the process was not killed."
+            )
+    else:
+        fail(f"Unsupported failed-start recovery host: {host}")
 
     finish(directory)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def geysermc_api_json(url, user_agent):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "download.geysermc.org":
+        fail("Refusing an unexpected GeyserMC API URL.")
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": user_agent, "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        fail(f"GeyserMC {url.rsplit('/', 1)[-1]} metadata lookup failed: {exc}")
+    if not isinstance(payload, dict):
+        fail("GeyserMC downloads API returned an unexpected JSON root.")
+    return payload
+
+
+def fetch_geysermc_default_builds(project, version, user_agent):
+    if project not in ("geyser", "floodgate"):
+        fail(f"Unsupported GeyserMC project: {project}")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){1,3}", version):
+        fail(f"Invalid {project} release version for build-history lookup.")
+    if not user_agent or "\n" in user_agent or "\r" in user_agent:
+        fail("A valid GeyserMC downloads API User-Agent is required.")
+
+    root = "https://download.geysermc.org/v2/projects"
+    version_path = urllib.parse.quote(version, safe=".")
+    builds_url = f"{root}/{project}/versions/{version_path}/builds"
+    build_payload = geysermc_api_json(builds_url, user_agent)
+    builds = build_payload.get("builds")
+    if build_payload.get("project_id") != project or not isinstance(builds, list):
+        fail(f"GeyserMC returned an invalid {project} build listing for {version}.")
+
+    default_builds = [
+        item for item in builds
+        if isinstance(item, dict)
+        and item.get("channel") == "default"
+        and isinstance(item.get("build"), int)
+        and not isinstance(item.get("build"), bool)
+        and item.get("build") >= 0
+    ]
+    if not default_builds:
+        fail(f"No default-channel {project} build is available for {version}.")
+    return default_builds
+
+
+def fetch_geysermc_default_build(project, user_agent):
+    if project not in ("geyser", "floodgate"):
+        fail(f"Unsupported GeyserMC project: {project}")
+    if not user_agent or "\n" in user_agent or "\r" in user_agent:
+        fail("A valid GeyserMC downloads API User-Agent is required.")
+
+    root = "https://download.geysermc.org/v2/projects"
+    latest_url = f"{root}/{project}/versions/latest/builds/latest"
+    latest = geysermc_api_json(latest_url, user_agent)
+    version = latest.get("version")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){1,3}", version):
+        fail(f"GeyserMC returned an invalid {project} release version.")
+
+    default_builds = fetch_geysermc_default_builds(project, version, user_agent)
+    build = max(default_builds, key=lambda item: item["build"])
+    build_id = build["build"]
+    platform = "spigot"
+    expected_name = "Geyser-Spigot.jar" if project == "geyser" else "floodgate-spigot.jar"
+    downloads = build.get("downloads")
+    artifact = downloads.get(platform) if isinstance(downloads, dict) else None
+    if not isinstance(artifact, dict):
+        fail(f"GeyserMC {project} build {build_id} has no Spigot artifact.")
+
+    name = artifact.get("name")
+    if name != expected_name:
+        fail(
+            f"GeyserMC {project} returned unexpected artifact name {name!r}; "
+            f"expected {expected_name!r}."
+        )
+    checksum = artifact.get("sha256")
+    if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
+        fail(f"GeyserMC {project} build {build_id} has no valid SHA-256 checksum.")
+
+    version_path = urllib.parse.quote(version, safe=".")
+    build_path = f"{build_id}"
+    platform_path = urllib.parse.quote(platform, safe=".-_")
+    download_url = (
+        f"{root}/{project}/versions/{version_path}/builds/"
+        f"{build_path}/downloads/{platform_path}"
+    )
+    return {
+        "project": project,
+        "version": version,
+        "build": build_id,
+        "channel": "default",
+        "time": build.get("time"),
+        "name": name,
+        "url": download_url,
+        "sha256": checksum.lower(),
+        "build_history": default_builds,
+        "platform": platform,
+    }
+
+
+def download_verified_geysermc_artifact(metadata, destination, user_agent):
+    request = urllib.request.Request(
+        metadata["url"],
+        headers={"User-Agent": user_agent, "Accept": "application/octet-stream"}
+    )
+    digest = hashlib.sha256()
+    received = 0
+    started = time.monotonic()
+    last_report = started
+    label = metadata["project"].capitalize()
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            length_header = response.headers.get("Content-Length")
+            try:
+                expected_size = int(length_header) if length_header else None
+                if expected_size is not None and expected_size < 1:
+                    expected_size = None
+            except (TypeError, ValueError):
+                expected_size = None
+
+            with Path(destination).open("xb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+
+                    now_mono = time.monotonic()
+                    if now_mono - last_report >= 1:
+                        elapsed = max(now_mono - started, 0.001)
+                        speed = received / elapsed / (1024 * 1024)
+                        if expected_size:
+                            percent = min(100.0, received * 100.0 / expected_size)
+                            progress = f"{percent:6.2f}% {received}/{expected_size} bytes"
+                        else:
+                            progress = f"{received:,} bytes"
+                        print(
+                            f"[download][{label}] {progress} {speed:.2f} MiB/s",
+                            flush=True
+                        )
+                        last_report = now_mono
+                output.flush()
+                os.fsync(output.fileno())
+    except Exception as exc:
+        try:
+            Path(destination).unlink()
+        except FileNotFoundError:
+            pass
+        fail(f"{label} Spigot JAR download failed: {exc}")
+
+    if received < 1:
+        Path(destination).unlink(missing_ok=True)
+        fail(f"{label} Spigot JAR download was empty.")
+
+    actual_hash = digest.hexdigest()
+    if actual_hash != metadata["sha256"]:
+        Path(destination).unlink(missing_ok=True)
+        fail(f"{label} Spigot JAR SHA-256 verification failed.")
+
+    print(f"[download][{label}] SHA256={actual_hash}")
+    print(f"[download][{label}] VERIFIED_BYTES={received}")
+
+
+def read_plugin_jar_identity(jar_path):
+    try:
+        with zipfile.ZipFile(jar_path) as archive:
+            names = set(archive.namelist())
+            descriptor_name = next(
+                (name for name in ("paper-plugin.yml", "plugin.yml") if name in names),
+                None
+            )
+            if descriptor_name is None:
+                fail(f"Plugin JAR has no plugin descriptor: {jar_path}")
+            descriptor = archive.read(descriptor_name).decode("utf-8", "replace")
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        fail(f"Cannot inspect plugin JAR {jar_path}: {exc}")
+
+    def scalar(key):
+        match = re.search(rf"(?mi)^{re.escape(key)}:\s*([^\r\n]+)", descriptor)
+        if not match:
+            return None
+        value = match.group(1).strip()
+        if value.startswith(("'", '"')) and len(value) >= 2:
+            value = value[1:-1]
+        else:
+            value = value.split("#", 1)[0].strip()
+        return value or None
+
+    name = scalar("name")
+    version = scalar("version")
+    if not name or not version:
+        fail(f"Plugin descriptor in {jar_path} has no name or version.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        fail(f"Plugin descriptor has an unsafe runtime name: {name!r}")
+    return {"plugin_name": name, "version": version, "descriptor": descriptor_name}
+
+
+def inspect_installed_managed_plugins(directory):
+    plugins_dir = Path(directory) / "plugins"
+    if plugins_dir.is_symlink():
+        fail(f"Unsafe symlinked plugins directory: {plugins_dir}")
+    if not plugins_dir.exists():
+        return {}
+    if not plugins_dir.is_dir():
+        fail(f"Plugins path is not a directory: {plugins_dir}")
+
+    found = {"geyser": [], "floodgate": []}
+    for jar in sorted(plugins_dir.iterdir(), key=lambda item: item.name.casefold()):
+        if jar.suffix.lower() != ".jar":
+            continue
+        filename = jar.name.casefold()
+        filename_projects = {
+            project for project in found if project in filename
+        }
+        if jar.is_symlink():
+            if filename_projects:
+                fail(f"Managed plugin JAR is a symlink: {jar}")
+            continue
+        if not jar.is_file():
+            continue
+
+        try:
+            identity = read_plugin_jar_identity(jar)
+        except RuntimeError:
+            if filename_projects:
+                raise
+            continue
+
+        declared = identity["plugin_name"].casefold()
+        declared_project = {
+            "geyser-spigot": "geyser",
+            "floodgate": "floodgate",
+        }.get(declared)
+        declared_projects = {declared_project} if declared_project else set()
+        projects = filename_projects | declared_projects
+        if not projects:
+            continue
+        if declared_project is None:
+            fail(
+                f"Managed-looking plugin JAR has an unrecognized descriptor identity: "
+                f"{jar.name} declares {identity['plugin_name']!r}."
+            )
+        if projects != {declared_project}:
+            fail(f"Plugin JAR filename and descriptor disagree: {jar.name}")
+
+        project = declared_project
+        found[project].append({
+            "project": project,
+            "path": jar,
+            "plugin_name": identity["plugin_name"],
+            "version": identity["version"],
+            "descriptor": identity["descriptor"],
+            "sha256": sha256_file(jar),
+        })
+
+    result = {}
+    for project, candidates in found.items():
+        if len(candidates) > 1:
+            names = ", ".join(item["path"].name for item in candidates)
+            fail(f"Multiple installed {project} JARs are ambiguous: {names}")
+        if candidates:
+            result[project] = candidates[0]
+        else:
+            print(f"[SKIP_NOT_INSTALLED] {project.capitalize()} is not installed; no JAR will be added.")
+    return result
+
+
+def plugin_release_version(version):
+    match = re.match(r"^(\d+(?:\.\d+){1,3})", version or "")
+    if not match:
+        fail(f"Cannot safely compare installed plugin version: {version!r}")
+    return match.group(1)
+
+
+def plugin_release_tuple(version):
+    return tuple(int(part) for part in plugin_release_version(version).split("."))
+
+
+def plugin_needs_update(installed, metadata, user_agent):
+    if installed["sha256"] == metadata["sha256"]:
+        return False
+
+    current_release = plugin_release_version(installed["version"])
+    target_version = plugin_release_tuple(metadata["version"])
+    current_version = plugin_release_tuple(installed["version"])
+    if current_version > target_version:
+        fail(
+            f"Installed {metadata['project']} version {installed['version']} is "
+            f"newer than official default {metadata['version']}; refusing downgrade."
+        )
+
+    if current_release == metadata["version"]:
+        current_history = metadata["build_history"]
+    else:
+        # A lower version string alone does not prove the live JAR is an
+        # official artifact. Match its exact SHA-256 against that release's
+        # own default-channel history before allowing replacement.
+        current_history = fetch_geysermc_default_builds(
+            metadata["project"], current_release, user_agent
+        )
+
+    current_builds = [
+        item for item in current_history
+        if isinstance(item, dict)
+        and isinstance(item.get("build"), int)
+        and not isinstance(item.get("build"), bool)
+        and isinstance(item.get("downloads"), dict)
+        and isinstance(item["downloads"].get(metadata["platform"]), dict)
+        and item["downloads"][metadata["platform"]].get("sha256") == installed["sha256"]
+    ]
+    if not current_builds:
+        fail(
+            f"Installed {metadata['project']} JAR ({installed['version']}) has a "
+            "SHA-256 not recognized in its official default-channel build history. "
+            "Refusing to replace an unidentified/custom artifact."
+        )
+    current_build = max(item["build"] for item in current_builds)
+    if current_release == metadata["version"] and current_build >= metadata["build"]:
+        fail(
+            f"Installed {metadata['project']} build {current_build} is not older "
+            f"than selected default build {metadata['build']}; refusing downgrade."
+        )
+    return True
+
+
+def ensure_geyser_paper_compatibility(minecraft_version):
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", minecraft_version or "")
+    if not match:
+        fail(
+            f"Cannot verify Geyser-Spigot compatibility with Minecraft "
+            f"{minecraft_version!r}; refusing to replace Geyser."
+        )
+    version = tuple(int(value or 0) for value in match.groups())
+    if version < (1, 20, 5):
+        fail(
+            "The selected current Geyser-Spigot release requires Paper/Spigot "
+            "1.20.5 or newer. This server is running Minecraft "
+            f"{minecraft_version}; refusing the Geyser update."
+        )
+
+
+def query_plugin_version_from_console(session, plugin_name, expected_version, timeout=12):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        fail("Invalid tmux session name for plugin version query.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", plugin_name):
+        fail(f"Unsafe plugin name for runtime verification: {plugin_name!r}")
+
+    target = f"={session}:0.0"
+    response_pattern = re.compile(
+        rf"(?im)^.*{re.escape(plugin_name)}\s+version\s+"
+        rf"{re.escape(expected_version)}(?:\s|$).*$"
+    )
+
+    def clean_console(output):
+        output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+        output = re.sub(r"§[0-9a-fk-or]", "", output, flags=re.IGNORECASE)
+        return output
+
+    def capture():
+        return run_command([
+            "tmux", "capture-pane", "-p", "-t", target, "-S", "-2000"
+        ])
+
+    before = clean_console(capture())
+    before_count = len(response_pattern.findall(before))
+    missing_text = "This server is not running any plugin by that name."
+    before_missing_count = before.count(missing_text)
+
+    # Bukkit/Paper's /version <plugin> command responds synchronously with
+    # "PluginName version X". Unlike plain /version, it does not emit the
+    # asynchronous "Checking version" marker.
+    run_command([
+        "tmux", "send-keys", "-t", target,
+        f"version {plugin_name}", "Enter"
+    ])
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        output = clean_console(capture())
+        if len(response_pattern.findall(output)) > before_count:
+            print(f"[verify][plugin] {plugin_name}={expected_version}")
+            return expected_version
+        if output.count(missing_text) > before_missing_count:
+            fail(f"Paper reports that plugin {plugin_name} is not loaded.")
+        time.sleep(0.25)
+
+    fail(
+        f"No fresh Paper console response confirmed {plugin_name} version "
+        f"{expected_version}; refusing to report the update as healthy."
+    )
+
+
+def restore_core_update_jars(changes, transaction_dir):
+    errors = []
+    for change in reversed(changes):
+        target = change["target"]
+        backup = Path(transaction_dir) / f"previous-{change['key']}.jar"
+        restore_temp = target.parent / f".hagonoy-core-restore-{uuid.uuid4().hex}.part"
+        try:
+            if target.is_symlink() or not target.is_file():
+                fail(f"Refusing to restore through a missing or symlinked target: {target}")
+            shutil.copy2(backup, restore_temp)
+            with restore_temp.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(restore_temp, target)
+            sync_directory(target.parent)
+        except Exception as exc:
+            try:
+                restore_temp.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            errors.append(f"{target.name}: {exc}")
+    return errors
+
+
+def verify_core_update_runtime(
+    directory, session, port, minecraft_version, expected_paper_build,
+    plugins, expected_plugin_versions, host="ubuntu", bedrock_port=19132
+):
+    runtime = verify_running_server(
+        directory, host, "AUTO", "AUTO",
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
+    )
+    if runtime["minecraft_version"] != minecraft_version:
+        fail(
+            f"Minecraft version changed unexpectedly: expected {minecraft_version}, "
+            f"found {runtime['minecraft_version']}."
+        )
+    match = re.match(
+        rf"^{re.escape(minecraft_version)}-(\d+)(?:-|$)",
+        runtime["paper_version"]
+    )
+    if match is None or int(match.group(1)) != expected_paper_build:
+        fail(
+            f"Live Paper build verification failed: expected {expected_paper_build}, "
+            f"found {runtime['paper_version']}."
+        )
+    for project in ("geyser", "floodgate"):
+        plugin = plugins.get(project)
+        if plugin is None:
+            continue
+        query_plugin_version_from_console(
+            session, plugin["plugin_name"], expected_plugin_versions[project]
+        )
+    return runtime
+
+
+def core_artifact_cache_filename(key, metadata, minecraft_version):
+    if key == "paper":
+        return f"paper-{minecraft_version}-{metadata['build']}.jar"
+    if key in ("geyser", "floodgate"):
+        return f"{key}-{metadata['version']}-{metadata['build']}-spigot.jar"
+    fail(f"Unsupported managed artifact cache key: {key}")
+
+
+def verify_cached_core_artifact(key, metadata, cache_path, minecraft_version):
+    cache_path = Path(cache_path)
+    if cache_path.is_symlink() or not cache_path.is_file():
+        fail(f"Verified cache artifact is missing or unsafe: {cache_path}")
+    digest = sha256_file(cache_path)
+    if digest != metadata.get("sha256"):
+        fail(
+            f"Central cache SHA-256 mismatch for {key}: expected "
+            f"{metadata.get('sha256')}, found {digest}."
+        )
+    if key == "paper":
+        expected_size = metadata.get("size")
+        if cache_path.stat().st_size != expected_size:
+            fail(f"Central cache Paper artifact size mismatch: {cache_path}")
+        try:
+            with zipfile.ZipFile(cache_path) as archive:
+                bad_entry = archive.testzip()
+        except (OSError, zipfile.BadZipFile) as exc:
+            fail(f"Central cache Paper JAR is not a valid archive: {exc}")
+        if bad_entry:
+            fail(f"Central cache Paper JAR has a corrupt entry: {bad_entry}")
+    else:
+        identity = read_plugin_jar_identity(cache_path)
+        expected_name = {"geyser": "geyser-spigot", "floodgate": "floodgate"}[key]
+        if identity["plugin_name"].casefold() != expected_name:
+            fail(
+                f"Central cache {key} artifact has unexpected plugin identity "
+                f"{identity['plugin_name']!r}."
+            )
+        if plugin_release_tuple(identity["version"]) != plugin_release_tuple(metadata["version"]):
+            fail(
+                f"Central cache {key} descriptor version {identity['version']} "
+                f"does not match official release {metadata['version']}."
+            )
+    return cache_path
+
+
+def populate_core_artifact_cache(cache_directory, minecraft_version, components, user_agent):
+    if minecraft_version not in ("AUTO",) and not re.fullmatch(r"\d+(?:\.\d+){1,2}", minecraft_version):
+        fail("Invalid Minecraft version for central artifact cache.")
+    requested = set(components)
+    if not requested or not requested.issubset({"paper", "geyser", "floodgate"}):
+        fail("Only Paper and already-installed managed Geyser/Floodgate components may be cached.")
+    cache_directory = Path(cache_directory)
+    if cache_directory.exists() and cache_directory.is_symlink():
+        fail("Central artifact cache directory cannot be a symlink.")
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    cache_directory = cache_directory.resolve(strict=True)
+    targets = []
+    if "paper" in requested:
+        targets.append(("paper", fetch_paper_stable_build(minecraft_version, user_agent)))
+    for project in ("geyser", "floodgate"):
+        if project in requested:
+            targets.append((project, fetch_geysermc_default_build(project, user_agent)))
+
+    print(f"ARTIFACT_CACHE={cache_directory}")
+    for key, metadata in targets:
+        filename = core_artifact_cache_filename(key, metadata, minecraft_version)
+        final_path = cache_directory / filename
+        if final_path.is_file() and not final_path.is_symlink():
+            try:
+                verify_cached_core_artifact(key, metadata, final_path, minecraft_version)
+                print(f"CACHE_{key.upper()}=HIT")
+                print(f"CACHE_{key.upper()}_FILE={final_path}")
+                continue
+            except RuntimeError:
+                # A corrupt candidate is never treated as a hit. A verified new
+                # file must exist before it can replace the current cache entry.
+                pass
+        temporary = cache_directory / f".{filename}.{uuid.uuid4().hex}.part"
+        try:
+            if key == "paper":
+                download_verified_paper_build(metadata, temporary, user_agent)
+            else:
+                download_verified_geysermc_artifact(metadata, temporary, user_agent)
+            verify_cached_core_artifact(key, metadata, temporary, minecraft_version)
+            os.replace(temporary, final_path)
+            sync_directory(cache_directory)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        print(f"CACHE_{key.upper()}=DOWNLOADED")
+        print(f"CACHE_{key.upper()}_FILE={final_path}")
+    print("CACHE_RESULT=VERIFIED")
+
+
+def update_core_server(
+    directory, session, port, ready_pattern,
+    start_timeout, stop_timeout, user_agent, mode, host="ubuntu",
+    artifact_cache=None, bedrock_port=19132, expected_generation_id=None
+):
+    if mode not in ("plan", "execute"):
+        fail("Core update mode must be plan or execute.")
+    directory = validate_lifecycle_args(
+        directory, session, port, start_timeout
+    )
+
+    data = load(directory)
+    if data is None or data["state"] != "running" or data.get("host") != host:
+        fail(f"Core update requires a tracked RUNNING {host} generation.")
+    if expected_generation_id is not None and data.get("generation_id") != expected_generation_id:
+        fail("Active server generation changed since the coordinator preflight. Refusing to update.")
+
+    runtime = verify_running_server(
+        directory, host, "AUTO", "AUTO",
+        session, port, require_manifest_absent=False, bedrock_port=bedrock_port
+    )
+    minecraft_version = runtime["minecraft_version"]
+    current_paper = runtime["paper_version"]
+    current_match = re.match(
+        rf"^{re.escape(minecraft_version)}-(\d+)(?:-|$)", current_paper
+    )
+    if current_match is None:
+        fail(f"Cannot identify the installed Paper build from: {current_paper}")
+    current_paper_build = int(current_match.group(1))
+
+    print("========== HSMP CORE UPDATE CHECK ==========")
+    print(f"ACTIVE_HOST={host.upper()}")
+    print(f"SERVER_DIRECTORY={directory}")
+    print(f"ARTIFACT_CACHE={Path(artifact_cache).resolve() if artifact_cache else 'DIRECT_DOWNLOAD'}")
+    print(f"MINECRAFT_VERSION={minecraft_version}")
+    print(f"CURRENT_PAPER={current_paper}")
+    print(f"CURRENT_PAPER_BUILD={current_paper_build}")
+
+    server_jar = directory / "server.jar"
+    if server_jar.is_symlink() or not server_jar.is_file():
+        fail(f"Installed server JAR is missing or unsafe: {server_jar}")
+    current_server_sha = sha256_file(server_jar)
+
+    paper_metadata = fetch_paper_stable_build(minecraft_version, user_agent)
+    target_paper_build = paper_metadata["build"]
+    if target_paper_build < current_paper_build:
+        fail(
+            f"Stable Paper API build {target_paper_build} is older than installed "
+            f"build {current_paper_build}; refusing downgrade."
+        )
+
+    plugins = inspect_installed_managed_plugins(directory)
+    plugin_metadata = {}
+    for project in ("geyser", "floodgate"):
+        installed = plugins.get(project)
+        if installed is None:
+            continue
+        metadata = fetch_geysermc_default_build(project, user_agent)
+        plugin_metadata[project] = metadata
+        installed["update_needed"] = plugin_needs_update(installed, metadata, user_agent)
+        if project == "geyser" and installed["update_needed"]:
+            ensure_geyser_paper_compatibility(minecraft_version)
+        installed["target_metadata"] = metadata
+
+    changes = []
+    if target_paper_build > current_paper_build:
+        changes.append({
+            "key": "paper",
+            "label": "Paper",
+            "target": server_jar,
+            "metadata": paper_metadata,
+            "old_sha256": current_server_sha,
+        })
+
+    for project in ("geyser", "floodgate"):
+        installed = plugins.get(project)
+        if installed is None or not installed["update_needed"]:
+            continue
+        metadata = plugin_metadata[project]
+        changes.append({
+            "key": project,
+            "label": project.capitalize(),
+            "target": installed["path"],
+            "metadata": metadata,
+            "old_sha256": installed["sha256"],
+            "installed": installed,
+        })
+
+    print("\n========== COMPONENT PLAN ==========")
+    if target_paper_build == current_paper_build:
+        print(f"[CURRENT] Paper build {current_paper_build}")
+    else:
+        print(f"[UPDATE] Paper {current_paper_build} -> {target_paper_build}")
+    for project in ("geyser", "floodgate"):
+        installed = plugins.get(project)
+        if installed is None:
+            continue
+        metadata = plugin_metadata[project]
+        if installed["update_needed"]:
+            print(
+                f"[UPDATE] {installed['plugin_name']} {installed['version']} -> "
+                f"{metadata['version']} build {metadata['build']} "
+                f"({installed['path'].name}; in-place replacement)"
+            )
+        else:
+            print(
+                f"[CURRENT] {installed['plugin_name']} {installed['version']} "
+                f"({installed['path'].name}; SHA-256 already matches official build)"
+            )
+    print("[UNCHANGED] All plugins outside Paper, Geyser, and Floodgate.")
+    print("[UNCHANGED] Worlds, configs, datapacks, plugin data directories, and server properties.")
+
+    if not changes:
+        print("CORE_UPDATE=ALREADY_CURRENT")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        print("RESULT=READY_FOR_CORE_UPDATE")
+        print("PLAN_ONLY=TRUE" if mode == "plan" else "NO_CHANGES=TRUE")
+        print("No download, shutdown, JAR replacement, or restart was performed.")
+        return
+
+    for change in changes:
+        metadata = change["metadata"]
+        print(
+            f"TARGET_{change['key'].upper()}={metadata.get('name')} "
+            f"BUILD={metadata.get('build')} SHA256={metadata['sha256']}"
+        )
+
+    if mode == "plan":
+        print("RESULT=READY_FOR_CORE_UPDATE")
+        print("PLAN_ONLY=TRUE")
+        print("No download, shutdown, JAR replacement, or restart was performed.")
+        print(f"GENERATION={data['generation']}")
+        print(f"GENERATION_ID={data['generation_id']}")
+        return
+
+    # Keep each temporary download beside its destination so the final
+    # os.replace remains atomic even if plugins/ is a separate filesystem.
+    for change in changes:
+        change["stage"] = change["target"].parent / (
+            f".hagonoy-core-{change['key']}-{uuid.uuid4().hex}.part"
+        )
+
+    transaction_dir = None
+    keep_transaction = False
+    try:
+        print("\n========== DOWNLOAD AND VERIFY ALL CHANGES ==========")
+        for change in changes:
+            metadata = change["metadata"]
+            print(f"[stage] {change['label']}: {metadata['name']}", flush=True)
+            if artifact_cache:
+                cache_file = Path(artifact_cache) / core_artifact_cache_filename(
+                    change["key"], metadata, minecraft_version
+                )
+                verify_cached_core_artifact(
+                    change["key"], metadata, cache_file, minecraft_version
+                )
+                shutil.copy2(cache_file, change["stage"])
+                if sha256_file(change["stage"]) != metadata["sha256"]:
+                    fail(f"Copied {change['label']} cache artifact failed destination SHA-256 verification.")
+            elif change["key"] == "paper":
+                download_verified_paper_build(
+                    metadata, change["stage"], user_agent
+                )
+            else:
+                download_verified_geysermc_artifact(
+                    metadata, change["stage"], user_agent
+                )
+            if change["key"] != "paper":
+                staged_identity = read_plugin_jar_identity(change["stage"])
+                expected_plugin_name = {
+                    "geyser": "geyser-spigot",
+                    "floodgate": "floodgate",
+                }[change["key"]]
+                if staged_identity["plugin_name"].casefold() != expected_plugin_name:
+                    fail(
+                        f"Downloaded {change['label']} JAR declares unexpected plugin "
+                        f"identity {staged_identity['plugin_name']!r}; expected "
+                        f"{expected_plugin_name!r}."
+                    )
+                if plugin_release_tuple(staged_identity["version"]) != plugin_release_tuple(metadata["version"]):
+                    fail(
+                        f"Downloaded {change['label']} descriptor version "
+                        f"{staged_identity['version']} does not match API release "
+                        f"{metadata['version']}."
+                    )
+                change["new_plugin_version"] = staged_identity["version"]
+                change["new_plugin_name"] = staged_identity["plugin_name"]
+
+        # Verify the generation and every source JAR again after all downloads.
+        current = load(directory)
+        if (
+            current is None
+            or current["state"] != "running"
+            or current["generation_id"] != data["generation_id"]
+        ):
+            fail("Generation changed during staging. Refusing to stop or update.")
+        for change in changes:
+            target = change["target"]
+            if target.is_symlink() or not target.is_file():
+                fail(f"Update target became missing or unsafe during staging: {target}")
+            if sha256_file(target) != change["old_sha256"]:
+                fail(f"Installed {change['label']} JAR changed during staging; refusing update.")
+
+        # Temporary JAR rollback copies are transaction-local, not a full
+        # world/server backup. Snapshot every target before graceful shutdown.
+        transaction_dir = Path(tempfile.mkdtemp(
+            prefix=".hagonoy-core-update-transaction-",
+            dir=str(directory.parent),
+        ))
+        print("\n========== PRESERVE JARS FOR TEMPORARY ROLLBACK ==========")
+        for change in changes:
+            backup = transaction_dir / f"previous-{change['key']}.jar"
+            shutil.copy2(change["target"], backup)
+            with backup.open("rb") as stream:
+                os.fsync(stream.fileno())
+            change["backup"] = backup
+            print(f"[rollback-copy] {change['label']} -> {backup.name}")
+        sync_directory(transaction_dir)
+
+        print("\n========== GRACEFUL SERVER STOP ==========")
+        stop_managed_server(directory, session, port, stop_timeout, host=host, bedrock_port=bedrock_port)
+        stopped = load(directory)
+        if (
+            stopped is None
+            or stopped["state"] != "stopped"
+            or stopped["generation_id"] != data["generation_id"]
+        ):
+            keep_transaction = True
+            fail(
+                "Server stop was not reflected in the expected generation. "
+                f"Temporary JAR transaction retained at {transaction_dir}."
+            )
+
+        # A second identity check closes the gap between staging and install.
+        for change in changes:
+            target = change["target"]
+            if target.is_symlink() or not target.is_file() or sha256_file(target) != change["old_sha256"]:
+                try:
+                    start_managed_server(
+                        directory, session, port, ready_pattern, start_timeout,
+                        host=host, bedrock_port=bedrock_port
+                    )
+                except Exception as restart_error:
+                    keep_transaction = True
+                    fail(
+                        "An installed JAR changed while the server was stopping; "
+                        "no update was applied. The server did not restart and "
+                        f"the temporary transaction was retained at {transaction_dir}: {restart_error}"
+                    )
+                fail(f"{change['label']} JAR changed during shutdown; no replacement was applied.")
+
+        print("\n========== ATOMIC COMPONENT REPLACEMENT ==========")
+        try:
+            for change in changes:
+                previous_mode = stat.S_IMODE(change["target"].stat(follow_symlinks=False).st_mode)
+                os.chmod(change["stage"], previous_mode)
+                with change["stage"].open("rb") as staged_stream:
+                    os.fsync(staged_stream.fileno())
+                os.replace(change["stage"], change["target"])
+                change["replaced"] = True
+                sync_directory(change["target"].parent)
+                print(f"[installed] {change['label']} -> {change['target'].name}")
+        except Exception as install_error:
+            restore_errors = restore_core_update_jars(changes, transaction_dir)
+            if restore_errors:
+                keep_transaction = True
+                fail(
+                    "A component replacement failed and one or more previous JARs "
+                    "could not be restored. The server remains stopped; temporary "
+                    f"recovery files are retained at {transaction_dir}. "
+                    f"Install error: {install_error}. Restore errors: {'; '.join(restore_errors)}"
+                )
+            try:
+                start_managed_server(
+                    directory, session, port, ready_pattern, start_timeout,
+                    host=host, bedrock_port=bedrock_port
+                )
+            except Exception as restart_error:
+                keep_transaction = True
+                fail(
+                    "Component installation failed; all original JARs were restored, "
+                    "but Minecraft did not restart. Temporary transaction retained "
+                    f"at {transaction_dir}: {install_error}; {restart_error}"
+                )
+            fail(
+                "Component installation failed; all original JARs were restored "
+                f"and Minecraft restarted: {install_error}"
+            )
+
+        expected_paper_build = (
+            target_paper_build if target_paper_build > current_paper_build
+            else current_paper_build
+        )
+        expected_plugin_versions = {
+            project: (
+                next(
+                    change["new_plugin_version"] for change in changes
+                    if change["key"] == project
+                )
+                if any(change["key"] == project for change in changes)
+                else plugin["version"]
+            )
+            for project, plugin in plugins.items()
+        }
+        expected_plugin_names = {
+            project: (
+                next(
+                    change["new_plugin_name"] for change in changes
+                    if change["key"] == project
+                )
+                if any(change["key"] == project for change in changes)
+                else plugin["plugin_name"]
+            )
+            for project, plugin in plugins.items()
+        }
+
+        print("\n========== START AND VERIFY UPDATED COMPONENTS ==========")
+        try:
+            start_managed_server(
+                directory, session, port, ready_pattern, start_timeout,
+                host=host, bedrock_port=bedrock_port
+            )
+            # Use the plugin names from the newly staged descriptors when they
+            # changed; existing names remain authoritative for skipped JARs.
+            runtime_plugins = {
+                project: dict(plugin, plugin_name=expected_plugin_names[project])
+                for project, plugin in plugins.items()
+            }
+            verify_core_update_runtime(
+                directory, session, port, minecraft_version,
+                expected_paper_build, runtime_plugins,
+                expected_plugin_versions, host=host, bedrock_port=bedrock_port
+            )
+            updated = load(directory)
+            if updated is None or updated["state"] != "running":
+                fail("Updated server did not retain a RUNNING generation manifest.")
+
+            print("CORE_UPDATE=SUCCESS")
+            print(f"PAPER_BUILD={expected_paper_build}")
+            for project in ("geyser", "floodgate"):
+                if project in plugins:
+                    print(
+                        f"{project.upper()}_VERSION={expected_plugin_versions[project]}"
+                    )
+            print(f"GENERATION={updated['generation']}")
+            print(f"GENERATION_ID={updated['generation_id']}")
+            return
+
+        except Exception as start_error:
+            print(
+                f"[hagonoy-generation] Updated components did not all confirm readiness: "
+                f"{start_error}", file=sys.stderr
+            )
+            failed_generation = load(directory)
+            if failed_generation is None or failed_generation["state"] != "running":
+                keep_transaction = True
+                fail(
+                    "Updated startup state is unexpected. Do not replace files while "
+                    "server state is uncertain. Temporary transaction retained at "
+                    f"{transaction_dir}."
+                )
+
+            # If Minecraft became live but a plugin/runtime check failed, request
+            # another graceful save/stop. If startup never acquired a session or
+            # listener, reconcile only after proving it has exited.
+            session_state = probe_command(["tmux", "has-session", "-t", f"={session}"])
+            if session_state.returncode == 0:
+                try:
+                    verify_running_server(
+                        directory, host, "AUTO", "AUTO",
+                        session, port, require_manifest_absent=False,
+                        bedrock_port=bedrock_port
+                    )
+                    stop_managed_server(directory, session, port, stop_timeout, host=host, bedrock_port=bedrock_port)
+                except Exception as stop_error:
+                    keep_transaction = True
+                    fail(
+                        "Updated server/plugin verification failed and graceful "
+                        "shutdown could not be confirmed. No JAR was rolled back "
+                        "while Java may be active. Temporary transaction retained "
+                        f"at {transaction_dir}: {start_error}; {stop_error}"
+                    )
+            elif session_state.returncode == 1:
+                try:
+                    mark_failed_start_stopped(
+                        directory, session, port,
+                        failed_generation["generation_id"], host=host, bedrock_port=bedrock_port
+                    )
+                except Exception as stop_error:
+                    keep_transaction = True
+                    fail(
+                        "Updated server could not be proven stopped. No JAR was "
+                        "rolled back. Temporary transaction retained at "
+                        f"{transaction_dir}: {start_error}; {stop_error}"
+                    )
+            else:
+                keep_transaction = True
+                fail(
+                    "Could not establish updated server process state. No JAR was "
+                    "rolled back. Temporary transaction retained at "
+                    f"{transaction_dir}: {start_error}"
+                )
+
+            stopped_again = load(directory)
+            if stopped_again is None or stopped_again["state"] != "stopped":
+                keep_transaction = True
+                fail(
+                    "Updated server did not reach a verified STOPPED state. "
+                    f"Temporary transaction retained at {transaction_dir}."
+                )
+
+            restore_errors = restore_core_update_jars(changes, transaction_dir)
+            if restore_errors:
+                keep_transaction = True
+                fail(
+                    "Core update rollback could not restore every original JAR. "
+                    "The server remains stopped; temporary recovery copies are "
+                    f"retained at {transaction_dir}: {'; '.join(restore_errors)}"
+                )
+
+            print("PREVIOUS_CORE_JARS_RESTORED")
+            print("RESTARTING_PREVIOUS_COMPONENT_SET")
+            try:
+                start_managed_server(
+                    directory, session, port, ready_pattern, start_timeout,
+                    host=host, bedrock_port=bedrock_port
+                )
+                old_expected_plugins = {
+                    project: plugin["version"] for project, plugin in plugins.items()
+                }
+                old_runtime_plugins = {
+                    project: dict(plugin) for project, plugin in plugins.items()
+                }
+                verify_core_update_runtime(
+                    directory, session, port, minecraft_version,
+                    current_paper_build, old_runtime_plugins,
+                    old_expected_plugins, host=host, bedrock_port=bedrock_port
+                )
+            except Exception as rollback_error:
+                keep_transaction = True
+                fail(
+                    "Core update failed and all previous JARs were restored, but "
+                    "the previous component set did not confirm healthy startup. "
+                    f"Temporary recovery copies retained at {transaction_dir}: {rollback_error}"
+                )
+            fail(
+                "Core update failed. All previous JARs were restored and the "
+                f"previous component set restarted successfully: {start_error}"
+            )
+
+    finally:
+        for change in changes:
+            stage = change.get("stage")
+            if stage is not None:
+                try:
+                    stage.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_error:
+                    print(
+                        f"[hagonoy-generation] WARNING: staging file could not be removed: "
+                        f"{stage}: {cleanup_error}", file=sys.stderr
+                    )
+        if (transaction_dir is not None and transaction_dir.exists()
+                and not keep_transaction):
+            try:
+                shutil.rmtree(transaction_dir)
+            except OSError as cleanup_error:
+                print(
+                    "[hagonoy-generation] WARNING: temporary core-update rollback "
+                    f"directory could not be removed: {transaction_dir}: {cleanup_error}",
+                    file=sys.stderr,
+                )
 
 
 def update_paper_server(
@@ -1184,15 +2403,9 @@ def update_paper_server(
         f".hagonoy-paper-{target_build}-{uuid.uuid4().hex}.jar"
     )
 
-    rollback_jar = directory / (
-        f"server.jar.rollback-{current_build}-"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
-        f"{uuid.uuid4().hex[:8]}"
-    )
-
-    failed_jar = directory / (
-        f"server.jar.failed-{target_build}-{uuid.uuid4().hex[:8]}"
-    )
+    transaction_dir = None
+    rollback_jar = None
+    keep_transaction = False
 
     print()
     print("========== DOWNLOAD AND VERIFY ==========")
@@ -1212,6 +2425,12 @@ def update_paper_server(
         ):
             fail("Generation changed during download. Refusing to update.")
 
+        transaction_dir = Path(tempfile.mkdtemp(
+            prefix=".hagonoy-paper-transaction-",
+            dir=str(directory.parent),
+        ))
+        rollback_jar = transaction_dir / "previous-server.jar"
+
         print()
         print("========== GRACEFUL SERVER STOP ==========")
         stop_managed_server(
@@ -1226,15 +2445,77 @@ def update_paper_server(
         ):
             fail("Server stop was not reflected in the expected generation.")
 
-        # Retain the prior executable JAR as a local rollback artifact.
-        shutil.copy2(server_jar, rollback_jar)
-        with rollback_jar.open("rb") as stream:
-            os.fsync(stream.fileno())
+        # Keep only a temporary copy of the previous executable JAR outside
+        # the canonical server directory. It is removed after success/rollback.
+        try:
+            shutil.copy2(server_jar, rollback_jar)
+            with rollback_jar.open("rb") as stream:
+                os.fsync(stream.fileno())
+            keep_transaction = True
+        except Exception as backup_error:
+            try:
+                start_managed_server(
+                    directory, session, port,
+                    ready_pattern, start_timeout
+                )
+            except Exception as restart_error:
+                fail(
+                    "Could not preserve the previous Paper JAR. The original "
+                    "JAR is unchanged, but Minecraft did not restart: "
+                    f"{backup_error}; {restart_error}"
+                )
+            fail(
+                "Could not preserve the previous Paper JAR. The original "
+                f"JAR is unchanged and Minecraft restarted: {backup_error}"
+            )
 
-        print(f"ROLLBACK_JAR={rollback_jar}")
-
-        os.replace(staged_jar, server_jar)
-        sync_directory(directory)
+        try:
+            os.replace(staged_jar, server_jar)
+            sync_directory(directory)
+        except Exception as install_error:
+            restore_temp = None
+            try:
+                restore_temp = directory / (
+                    f".hagonoy-restore-{uuid.uuid4().hex}.jar"
+                )
+                shutil.copy2(rollback_jar, restore_temp)
+                os.replace(restore_temp, server_jar)
+                sync_directory(directory)
+                keep_transaction = False
+            except Exception as restore_error:
+                if restore_temp is not None:
+                    try:
+                        restore_temp.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as cleanup_error:
+                        print(
+                            "[hagonoy-generation] WARNING: restore staging "
+                            f"file could not be removed: {restore_temp}: "
+                            f"{cleanup_error}",
+                            file=sys.stderr,
+                        )
+                keep_transaction = True
+                fail(
+                    "Paper JAR installation failed and the previous JAR could "
+                    "not be restored. Temporary recovery copy retained at "
+                    f"{rollback_jar}: {install_error}; {restore_error}"
+                )
+            try:
+                start_managed_server(
+                    directory, session, port,
+                    ready_pattern, start_timeout
+                )
+            except Exception as restart_error:
+                fail(
+                    "Paper JAR installation failed. The original JAR was "
+                    "restored, but Minecraft did not restart: "
+                    f"{restart_error}"
+                )
+            fail(
+                "Paper JAR installation failed. The original JAR was "
+                f"restored and Minecraft restarted: {install_error}"
+            )
 
         print()
         print("========== START UPDATED PAPER ==========")
@@ -1264,11 +2545,11 @@ def update_paper_server(
                     "match the requested stable update."
                 )
 
+            keep_transaction = False
             print("PAPER_UPDATE=SUCCESS")
             print(f"PAPER_BUILD={target_build}")
             print(f"GENERATION={updated['generation']}")
             print(f"GENERATION_ID={updated['generation_id']}")
-            print(f"ROLLBACK_JAR={rollback_jar}")
             return
 
         except Exception as start_error:
@@ -1280,29 +2561,48 @@ def update_paper_server(
 
             failed_generation = load(directory)
             if failed_generation is None or failed_generation["state"] != "running":
+                keep_transaction = True
                 fail(
                     "Update startup failed and generation state is unexpected. "
-                    f"Previous JAR retained at {rollback_jar}."
+                    "Previous JAR transaction retained at "
+                    f"{rollback_jar}."
                 )
 
-            mark_failed_start_stopped(
-                directory, session, port,
-                failed_generation["generation_id"]
-            )
+            try:
+                mark_failed_start_stopped(
+                    directory, session, port,
+                    failed_generation["generation_id"]
+                )
+            except Exception as stop_error:
+                keep_transaction = True
+                fail(
+                    "Updated server could not be confirmed stopped. Do not "
+                    "replace its JAR while Java may still be active. Previous "
+                    f"JAR transaction retained at {rollback_jar}: {stop_error}"
+                )
 
-            # Preserve the failed new JAR, then restore the previous build.
-            if server_jar.exists():
-                os.replace(server_jar, failed_jar)
-
+            # Replace the failed JAR in-place; do not leave a failed-JAR copy
+            # in the canonical directory.
             restore_temp = directory / (
                 f".hagonoy-restore-{uuid.uuid4().hex}.jar"
             )
-            shutil.copy2(rollback_jar, restore_temp)
-            os.replace(restore_temp, server_jar)
-            sync_directory(directory)
+            try:
+                shutil.copy2(rollback_jar, restore_temp)
+                os.replace(restore_temp, server_jar)
+                sync_directory(directory)
+                keep_transaction = False
+            except Exception as rollback_error:
+                try:
+                    restore_temp.unlink()
+                except FileNotFoundError:
+                    pass
+                keep_transaction = True
+                fail(
+                    "Paper rollback failed. Previous JAR transaction retained "
+                    f"at {rollback_jar}: {rollback_error}"
+                )
 
-            print(f"FAILED_UPDATE_JAR={failed_jar}")
-            print(f"RESTORED_ROLLBACK_JAR={rollback_jar}")
+            print("PREVIOUS_PAPER_JAR_RESTORED")
             print("RESTARTING_PREVIOUS_PAPER_BUILD")
 
             try:
@@ -1327,6 +2627,15 @@ def update_paper_server(
             staged_jar.unlink()
         except FileNotFoundError:
             pass
+        if transaction_dir is not None and transaction_dir.exists() and not keep_transaction:
+            try:
+                shutil.rmtree(transaction_dir)
+            except OSError as cleanup_error:
+                print(
+                    "[hagonoy-generation] WARNING: temporary Paper rollback "
+                    f"directory could not be removed: {transaction_dir}: {cleanup_error}",
+                    file=sys.stderr,
+                )
 
 
 def finish(directory):
@@ -1344,6 +2653,92 @@ def finish(directory):
     save(directory, data)
     print("Generation marked STOPPED.")
     show(directory)
+
+def probe_managed_host(directory, host, session, port, bedrock_port=19132):
+    """Read-only probe of one canonical host; never changes server state."""
+    if host not in ("ubuntu", "windows"):
+        fail(f"Unsupported probe host: {host}")
+    directory = Path(directory).resolve(strict=True)
+    manifest = load(directory)
+    if manifest is None:
+        fail(f"{host} canonical server has no generation manifest.")
+    if manifest.get("host") != host:
+        fail(f"{host} directory contains a manifest for {manifest.get('host')!r}.")
+    state = manifest.get("state")
+    runtime = None
+    if state == "running":
+        runtime = verify_running_server(
+            directory, host, "AUTO", "AUTO", session, port,
+            require_manifest_absent=False, bedrock_port=bedrock_port
+        )
+    elif state == "stopped":
+        verify_stopped_server(directory, session, port, host=host, bedrock_port=bedrock_port)
+    else:
+        fail(f"{host} manifest state is unknown.")
+    print(json.dumps({
+        "host": host, "state": state,
+        "generation": manifest["generation"],
+        "generation_id": manifest["generation_id"],
+        "parent_generation_id": manifest.get("parent_generation_id"),
+        "ancestors": manifest["ancestors"],
+        "paper_version": runtime["paper_version"] if runtime else manifest.get("paper_version"),
+        "minecraft_version": runtime["minecraft_version"] if runtime else manifest.get("minecraft_version"),
+        "directory": str(directory),
+    }, sort_keys=True))
+
+
+def select_active_host_probes(ubuntu, windows):
+    """Select one RUNNING host only when the stopped peer is its proven ancestor."""
+    probes = {"ubuntu": ubuntu, "windows": windows}
+    for expected_host, probe in probes.items():
+        if not isinstance(probe, dict) or probe.get("host") != expected_host:
+            fail(f"Missing or mismatched {expected_host} host probe.")
+        if probe.get("state") not in ("running", "stopped"):
+            fail(f"{expected_host} host state is UNKNOWN; refusing to guess.")
+        generation = probe.get("generation")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            fail(f"{expected_host} generation number is invalid.")
+        if not isinstance(probe.get("generation_id"), str) or not probe["generation_id"]:
+            fail(f"{expected_host} generation ID is missing.")
+        ancestors = probe.get("ancestors")
+        if not isinstance(ancestors, list) or any(not isinstance(x, str) or not x for x in ancestors):
+            fail(f"{expected_host} generation ancestry is invalid.")
+        if len(ancestors) != generation - 1:
+            fail(f"{expected_host} generation ancestry length is inconsistent.")
+
+    running = [probe for probe in probes.values() if probe["state"] == "running"]
+    stopped = [probe for probe in probes.values() if probe["state"] == "stopped"]
+    if len(running) != 1 or len(stopped) != 1:
+        fail(
+            "Exactly one canonical host must be RUNNING and the other STOPPED; "
+            "both-running, both-stopped and UNKNOWN states are unsafe."
+        )
+    active, peer = running[0], stopped[0]
+    if active["generation"] == peer["generation"]:
+        if (
+            active["generation_id"] != peer["generation_id"]
+            or active["ancestors"] != peer["ancestors"]
+        ):
+            fail("Equal generation numbers have conflicting IDs or ancestry.")
+    elif active["generation"] > peer["generation"]:
+        peer_index = len(peer["ancestors"])
+        if (
+            active["generation_id"] in peer["ancestors"]
+            or active["ancestors"][:peer_index] != peer["ancestors"]
+            or peer_index >= len(active["ancestors"])
+            or active["ancestors"][peer_index] != peer["generation_id"]
+        ):
+            fail("RUNNING host does not prove descent from the STOPPED peer generation.")
+    else:
+        fail("STOPPED peer is newer than the RUNNING host; authority is ambiguous.")
+
+    return {
+        "active": active,
+        "peer": peer,
+        "active_host": active["host"],
+        "peer_host": peer["host"],
+    }
+
 
 def select(ubuntu, windows):
     paths = {"UBUNTU": Path(ubuntu), "WINDOWS": Path(windows)}
@@ -1432,8 +2827,47 @@ def main():
         default="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
     )
 
+    s = sub.add_parser("core-update")
+    s.add_argument("directory")
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--ready-pattern", default="Done")
+    s.add_argument("--start-timeout", type=int, default=900)
+    s.add_argument("--stop-timeout", type=int, default=180)
+    s.add_argument("--host", choices=("ubuntu", "windows"), default="ubuntu")
+    s.add_argument("--artifact-cache")
+    s.add_argument("--bedrock-port", type=int, default=19132)
+    s.add_argument("--expected-generation-id")
+    core_mode = s.add_mutually_exclusive_group(required=True)
+    core_mode.add_argument("--plan", dest="mode", action="store_const", const="plan")
+    core_mode.add_argument("--execute", dest="mode", action="store_const", const="execute")
+    s.add_argument(
+        "--user-agent",
+        default="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
+    )
+
     s = sub.add_parser("finish")
     s.add_argument("directory")
+
+    s = sub.add_parser("cache-core-artifacts")
+    s.add_argument("--cache-dir", required=True)
+    s.add_argument("--minecraft-version", required=True)
+    s.add_argument("--include", default="")
+    s.add_argument(
+        "--user-agent",
+        default="HagonoySMPManager/1.0 (https://github.com/LemuelMagbitang/hagonoy-smp)"
+    )
+
+    s = sub.add_parser("probe-host")
+    s.add_argument("directory")
+    s.add_argument("--host", choices=("ubuntu", "windows"), required=True)
+    s.add_argument("--session", default="mcserver")
+    s.add_argument("--port", type=int, default=25565)
+    s.add_argument("--bedrock-port", type=int, default=19132)
+
+    s = sub.add_parser("select-active-host")
+    s.add_argument("ubuntu_json")
+    s.add_argument("windows_json")
 
     s = sub.add_parser("select")
     s.add_argument("ubuntu_directory")
@@ -1472,8 +2906,26 @@ def main():
             args.ready_pattern, args.start_timeout,
             args.stop_timeout, args.user_agent, args.mode
         )
+    elif args.action == "core-update":
+        update_core_server(
+            args.directory, args.session, args.port,
+            args.ready_pattern, args.start_timeout,
+            args.stop_timeout, args.user_agent, args.mode, args.host,
+            args.artifact_cache, args.bedrock_port, args.expected_generation_id
+        )
     elif args.action == "finish":
         finish(args.directory)
+    elif args.action == "probe-host":
+        probe_managed_host(args.directory, args.host, args.session, args.port, args.bedrock_port)
+    elif args.action == "select-active-host":
+        ubuntu_probe = json.loads(Path(args.ubuntu_json).read_text(encoding="utf-8"))
+        windows_probe = json.loads(Path(args.windows_json).read_text(encoding="utf-8"))
+        print(json.dumps(select_active_host_probes(ubuntu_probe, windows_probe), sort_keys=True))
+    elif args.action == "cache-core-artifacts":
+        components = [item for item in args.include.split(",") if item]
+        populate_core_artifact_cache(
+            args.cache_dir, args.minecraft_version, components, args.user_agent
+        )
     elif args.action == "select":
         select(args.ubuntu_directory, args.windows_directory)
 

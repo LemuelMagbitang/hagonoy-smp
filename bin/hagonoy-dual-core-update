@@ -1,0 +1,427 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="${HAGONOY_DUAL_CONFIG:-$ROOT/config/dual-host.conf}"
+HELPER="$ROOT/bin/hagonoy-generation"
+
+die() {
+    printf '[hagonoy-core-update] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ -f "$CONFIG" ]] || die "Missing dual-host configuration: $CONFIG"
+[[ -f "$HELPER" ]] || die "Missing generation helper: $HELPER"
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${WINDOWS_SERVER_DIR:?Missing Windows canonical server directory}"
+: "${WINDOWS_TMUX_SESSION:?Missing Windows tmux session}"
+: "${UBUNTU_SSH_TARGET:?Missing Ubuntu SSH target}"
+: "${UBUNTU_SERVER_DIR:?Missing Ubuntu canonical server directory}"
+: "${UBUNTU_TMUX_SESSION:?Missing Ubuntu tmux session}"
+: "${MINECRAFT_PORT:?Missing Minecraft TCP port}"
+: "${BEDROCK_PORT:?Missing Bedrock UDP port}"
+
+SERVER_UPDATE_CACHE="${SERVER_UPDATE_CACHE:-/mnt/d/Hagonoy-SMP/server-update-downloads}"
+READY_PATTERN="${READY_PATTERN:-Done}"
+START_TIMEOUT_SECONDS="${START_TIMEOUT_SECONDS:-900}"
+STOP_TIMEOUT_SECONDS="${STOP_TIMEOUT_SECONDS:-180}"
+
+[[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--execute" ) ]] ||
+    die "Usage: hagonoy-dual-core-update --plan|--execute"
+MODE="$1"
+
+for cmd in ssh scp python3 tmux powershell.exe flock; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd"
+done
+
+[[ "$MINECRAFT_PORT" =~ ^[0-9]+$ ]] && (( MINECRAFT_PORT >= 1 && MINECRAFT_PORT <= 65535 )) ||
+    die "Invalid Minecraft TCP port."
+[[ "$BEDROCK_PORT" =~ ^[0-9]+$ ]] && (( BEDROCK_PORT >= 1 && BEDROCK_PORT <= 65535 )) ||
+    die "Invalid Bedrock UDP port."
+[[ "$START_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( START_TIMEOUT_SECONDS > 0 )) ||
+    die "Invalid startup timeout."
+[[ "$STOP_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && (( STOP_TIMEOUT_SECONDS > 0 )) ||
+    die "Invalid shutdown timeout."
+[[ -n "$READY_PATTERN" ]] || die "READY_PATTERN cannot be empty."
+[[ "$SERVER_UPDATE_CACHE" == /* ]] || die "Central artifact cache must be an absolute WSL path."
+
+SSH=(ssh -T -o BatchMode=yes -o ConnectTimeout=8)
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+
+REMOTE_CACHE_DIR=""
+REMOTE_PEER_LOCK_PID=""
+REMOTE_PEER_LOCK_IN_FD=""
+REMOTE_PEER_LOCK_OUT_FD=""
+LOCAL_PEER_LOCK_FD=""
+
+cleanup() {
+    if [[ -n "$REMOTE_PEER_LOCK_IN_FD" ]]; then
+        eval "exec ${REMOTE_PEER_LOCK_IN_FD}>&-" || true
+        REMOTE_PEER_LOCK_IN_FD=""
+    fi
+    if [[ -n "$REMOTE_PEER_LOCK_PID" ]]; then
+        wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+        REMOTE_PEER_LOCK_PID=""
+    fi
+    if [[ -n "$REMOTE_PEER_LOCK_OUT_FD" ]]; then
+        eval "exec ${REMOTE_PEER_LOCK_OUT_FD}<&-" || true
+        REMOTE_PEER_LOCK_OUT_FD=""
+    fi
+    if [[ -n "$LOCAL_PEER_LOCK_FD" ]]; then
+        eval "exec ${LOCAL_PEER_LOCK_FD}>&-" || true
+    fi
+    rm -rf -- "$TMP_DIR"
+}
+trap cleanup EXIT
+
+build_remote_python_command() {
+    python3 - "$@" <<'PY'
+import shlex
+import sys
+
+action, *args = sys.argv[1:]
+code = 'import sys; exec(compile(sys.stdin.read(), "hagonoy-generation", "exec"))'
+
+if action == "probe-host":
+    argv = ["python3", "-c", code]
+    directory, session, port, bedrock_port = args
+    argv += [
+        "probe-host", directory,
+        "--host", "ubuntu",
+        "--session", session,
+        "--port", port,
+        "--bedrock-port", bedrock_port,
+    ]
+elif action == "core-update":
+    argv = [
+        "flock", "-n", "/tmp/hagonoy-smp-lifecycle.lock",
+        "python3", "-c", code,
+    ]
+    directory, session, port, bedrock_port, ready, start_timeout, stop_timeout, cache_dir, expected_generation_id, mode = args
+    argv += [
+        "core-update", directory,
+        "--session", session,
+        "--port", port,
+        "--bedrock-port", bedrock_port,
+        "--ready-pattern", ready,
+        "--start-timeout", start_timeout,
+        "--stop-timeout", stop_timeout,
+        "--host", "ubuntu",
+    ]
+    if cache_dir:
+        argv += ["--artifact-cache", cache_dir]
+    if expected_generation_id:
+        argv += ["--expected-generation-id", expected_generation_id]
+    argv += [mode]
+else:
+    raise SystemExit("Unsupported remote generation-helper action.")
+
+print(" ".join(shlex.quote(item) for item in argv))
+PY
+}
+
+run_ubuntu_helper() {
+    local remote_command
+    remote_command="$(build_remote_python_command "$@")" ||
+        die "Could not construct the Ubuntu helper command."
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_command" < "$HELPER"
+}
+
+run_windows_helper() {
+    flock -n /tmp/hagonoy-smp-windows-lifecycle.lock python3 "$HELPER" "$@"
+}
+
+probe_both_hosts() {
+    local windows_output
+    echo
+    echo "========== READ-ONLY TWO-HOST PREFLIGHT =========="
+
+    if ! windows_output="$(python3 "$HELPER" probe-host "$WINDOWS_SERVER_DIR" \
+        --host windows --session "$WINDOWS_TMUX_SESSION" \
+        --port "$MINECRAFT_PORT" --bedrock-port "$BEDROCK_PORT")"; then
+        die "Windows canonical host could not be positively verified. Aborting without choosing Ubuntu."
+    fi
+    printf '%s\n' "$windows_output" > "$TMP_DIR/windows.json"
+
+    if ! run_ubuntu_helper probe-host "$UBUNTU_SERVER_DIR" "$UBUNTU_TMUX_SESSION" \
+        "$MINECRAFT_PORT" "$BEDROCK_PORT" > "$TMP_DIR/ubuntu.json"; then
+        die "Ubuntu canonical host could not be positively verified. Aborting without choosing Windows."
+    fi
+
+    if ! python3 "$HELPER" select-active-host "$TMP_DIR/ubuntu.json" "$TMP_DIR/windows.json" \
+        > "$TMP_DIR/selection.json"; then
+        die "Two-host state or generation lineage is ambiguous. No host was selected."
+    fi
+
+    mapfile -t SELECTED < <(python3 - "$TMP_DIR/selection.json" <<'PY'
+import json, sys
+data=json.load(open(sys.argv[1], encoding="utf-8"))
+active=data["active"]
+peer=data["peer"]
+print(data["active_host"])
+print(active["generation"])
+print(active["generation_id"])
+print(data["peer_host"])
+print(peer["generation"])
+print(peer["generation_id"])
+PY
+)
+    (( ${#SELECTED[@]} == 6 )) || die "Active-host selection returned incomplete identity data."
+
+    ACTIVE_HOST="${SELECTED[0]}"
+    ACTIVE_GENERATION="${SELECTED[1]}"
+    ACTIVE_GENERATION_ID="${SELECTED[2]}"
+    PEER_HOST="${SELECTED[3]}"
+    PEER_GENERATION="${SELECTED[4]}"
+    PEER_GENERATION_ID="${SELECTED[5]}"
+
+    echo "ACTIVE_HOST=$ACTIVE_HOST"
+    echo "ACTIVE_SERVER_GENERATION=$ACTIVE_GENERATION"
+    echo "ACTIVE_SERVER_GENERATION_ID=$ACTIVE_GENERATION_ID"
+    echo "INACTIVE_HOST=$PEER_HOST"
+    echo "INACTIVE_SERVER_GENERATION=$PEER_GENERATION"
+    echo "INACTIVE_SERVER_GENERATION_ID=$PEER_GENERATION_ID"
+}
+
+run_active_core_update() {
+    local mode="$1" artifact_cache="${2:-}" expected_generation_id="${3:-}"
+    if [[ "$ACTIVE_HOST" == "windows" ]]; then
+        local -a args=(
+            core-update "$WINDOWS_SERVER_DIR"
+            --session "$WINDOWS_TMUX_SESSION"
+            --port "$MINECRAFT_PORT"
+            --bedrock-port "$BEDROCK_PORT"
+            --ready-pattern "$READY_PATTERN"
+            --start-timeout "$START_TIMEOUT_SECONDS"
+            --stop-timeout "$STOP_TIMEOUT_SECONDS"
+            --host windows
+        )
+        if [[ -n "$artifact_cache" ]]; then
+            args+=(--artifact-cache "$artifact_cache")
+        fi
+        if [[ -n "$expected_generation_id" ]]; then
+            args+=(--expected-generation-id "$expected_generation_id")
+        fi
+        args+=("$mode")
+        run_windows_helper "${args[@]}"
+    else
+        run_ubuntu_helper core-update "$UBUNTU_SERVER_DIR" "$UBUNTU_TMUX_SESSION" \
+            "$MINECRAFT_PORT" "$BEDROCK_PORT" "$READY_PATTERN" \
+            "$START_TIMEOUT_SECONDS" "$STOP_TIMEOUT_SECONDS" \
+            "$artifact_cache" "$expected_generation_id" "$mode"
+    fi
+}
+
+acquire_peer_lifecycle_lock() {
+    echo
+    echo "========== RESERVE INACTIVE HOST LIFECYCLE =========="
+    if [[ "$PEER_HOST" == "windows" ]]; then
+        exec {LOCAL_PEER_LOCK_FD}>/tmp/hagonoy-smp-windows-lifecycle.lock
+        flock -n "$LOCAL_PEER_LOCK_FD" ||
+            die "Windows lifecycle is busy. The inactive host could not be reserved; no update was started."
+        echo "INACTIVE_HOST_LOCK=WINDOWS_ACQUIRED"
+    elif [[ "$PEER_HOST" == "ubuntu" ]]; then
+        local remote_lock_command lock_line
+        remote_lock_command="exec 9>/tmp/hagonoy-smp-lifecycle.lock; flock -n 9 || exit 75; printf 'LOCKED\\n'; cat >/dev/null"
+        coproc HSMP_PEER_LOCK {
+            "${SSH[@]}" "$UBUNTU_SSH_TARGET" "$remote_lock_command"
+        }
+        REMOTE_PEER_LOCK_PID=$HSMP_PEER_LOCK_PID
+        REMOTE_PEER_LOCK_OUT_FD=${HSMP_PEER_LOCK[0]}
+        REMOTE_PEER_LOCK_IN_FD=${HSMP_PEER_LOCK[1]}
+        if ! IFS= read -r -t 8 -u "$REMOTE_PEER_LOCK_OUT_FD" lock_line ||
+            [[ "$lock_line" != "LOCKED" ]]; then
+            if [[ -n "$REMOTE_PEER_LOCK_IN_FD" ]]; then
+                eval "exec ${REMOTE_PEER_LOCK_IN_FD}>&-" || true
+                REMOTE_PEER_LOCK_IN_FD=""
+            fi
+            wait "$REMOTE_PEER_LOCK_PID" 2>/dev/null || true
+            REMOTE_PEER_LOCK_PID=""
+            die "Ubuntu lifecycle is busy or unreachable. The inactive host could not be reserved."
+        fi
+        eval "exec ${REMOTE_PEER_LOCK_OUT_FD}<&-"
+        REMOTE_PEER_LOCK_OUT_FD=""
+        echo "INACTIVE_HOST_LOCK=UBUNTU_ACQUIRED"
+    else
+        die "Unknown inactive host; cannot reserve lifecycle."
+    fi
+}
+
+
+plan_components() {
+    python3 - "$TMP_DIR/plan.log" <<'PY'
+import re, sys
+text=open(sys.argv[1], encoding="utf-8").read()
+keys=[]
+for key in re.findall(r"^TARGET_(PAPER|GEYSER|FLOODGATE)=", text, re.M):
+    name=key.lower()
+    if name not in keys:
+        keys.append(name)
+minecraft=re.search(r"^MINECRAFT_VERSION=(.+)$", text, re.M)
+if not minecraft:
+    raise SystemExit("Plan omitted the installed Minecraft version.")
+print(minecraft.group(1))
+print(",".join(keys))
+PY
+}
+
+run_plan() {
+    echo
+    echo "========== CORE UPDATE PLAN: $ACTIVE_HOST =========="
+    if run_active_core_update --plan | tee "$TMP_DIR/plan.log"; then
+        grep -Fq "RESULT=READY_FOR_CORE_UPDATE" "$TMP_DIR/plan.log" ||
+            die "Selected-host update plan did not reach its ready result."
+    else
+        die "Selected-host update plan failed. No server state was changed."
+    fi
+    echo "CENTRAL_ARTIFACT_CACHE=$SERVER_UPDATE_CACHE"
+    echo "DEPLOYMENT_HOST=$ACTIVE_HOST"
+}
+
+stage_remote_cache() {
+    local cache_output="$1"
+    REMOTE_CACHE_DIR="/tmp/hagonoy-core-cache-$RANDOM-$$"
+    "${SSH[@]}" "$UBUNTU_SSH_TARGET" "umask 077 && mkdir -m 700 -p -- '$REMOTE_CACHE_DIR'" ||
+        die "Could not create the Ubuntu temporary artifact staging directory."
+
+    mapfile -t CACHE_FILES < <(sed -n 's/^CACHE_[A-Z]*_FILE=//p' "$cache_output")
+    (( ${#CACHE_FILES[@]} > 0 )) || die "Cache population did not report any verified artifact paths."
+    for file in "${CACHE_FILES[@]}"; do
+        [[ -f "$file" && ! -L "$file" ]] || die "Cache artifact is missing or unsafe: $file"
+        scp -p -- "$file" "$UBUNTU_SSH_TARGET:$REMOTE_CACHE_DIR/" ||
+            die "Could not transfer verified artifact to Ubuntu: $(basename "$file")"
+    done
+
+    echo
+    echo "REMOTE_ARTIFACT_STAGING=$REMOTE_CACHE_DIR"
+    for file in "${CACHE_FILES[@]}"; do
+        local name expected actual
+        name="$(basename "$file")"
+        expected="$(sha256sum "$file" | awk '{print $1}')"
+        actual="$("${SSH[@]}" "$UBUNTU_SSH_TARGET" "sha256sum -- '$REMOTE_CACHE_DIR/$name' | cut -d' ' -f1")"
+        [[ "$actual" == "$expected" ]] ||
+            die "Ubuntu destination checksum mismatch for $name."
+        echo "REMOTE_CACHE_VERIFIED=$name"
+    done
+}
+
+verify_final_running_state() {
+    local expected_generation_id="$1"
+    probe_both_hosts
+    [[ "$ACTIVE_HOST" == "$FINAL_ACTIVE_HOST" ]] ||
+        die "Active host changed during the update. Inspect both copies; no automatic failover was attempted."
+    [[ "$ACTIVE_GENERATION_ID" == "$expected_generation_id" ]] ||
+        die "Final manifest generation does not match the update result."
+    [[ "$PEER_HOST" == "$INITIAL_PEER_HOST" ]] ||
+        die "Inactive host identity changed during the update."
+    [[ "$PEER_GENERATION_ID" == "$INITIAL_PEER_GENERATION_ID" ]] ||
+        die "Inactive host generation changed during the update."
+}
+
+echo "========== HSMP CORE UPDATE COORDINATOR =========="
+echo "Central cache: $SERVER_UPDATE_CACHE"
+echo "Mode: $MODE"
+
+probe_both_hosts
+INITIAL_ACTIVE_HOST="$ACTIVE_HOST"
+INITIAL_ACTIVE_GENERATION_ID="$ACTIVE_GENERATION_ID"
+INITIAL_PEER_HOST="$PEER_HOST"
+INITIAL_PEER_GENERATION_ID="$PEER_GENERATION_ID"
+FINAL_ACTIVE_HOST="$ACTIVE_HOST"
+
+run_plan
+
+if [[ "$MODE" == "--plan" ]]; then
+    echo
+    echo "CORE_UPDATE_PLAN=READY"
+    echo "PLAN_ONLY=TRUE"
+    echo "No cache download, transfer, shutdown, JAR replacement, or restart was performed."
+    exit 0
+fi
+
+mapfile -t PLAN_DETAILS < <(plan_components)
+(( ${#PLAN_DETAILS[@]} == 2 )) || die "Could not parse the component plan."
+MINECRAFT_VERSION="${PLAN_DETAILS[0]}"
+COMPONENTS="${PLAN_DETAILS[1]}"
+
+if [[ -z "$COMPONENTS" ]]; then
+    echo
+    echo "CORE_UPDATE=ALREADY_CURRENT"
+    echo "No downloads or live-server maintenance are necessary."
+    exit 0
+fi
+
+echo
+echo "========== POPULATE VERIFIED CENTRAL CACHE =========="
+mkdir -p -- "$SERVER_UPDATE_CACHE"
+python3 "$HELPER" cache-core-artifacts \
+    --cache-dir "$SERVER_UPDATE_CACHE" \
+    --minecraft-version "$MINECRAFT_VERSION" \
+    --include "$COMPONENTS" | tee "$TMP_DIR/cache.log" ||
+    die "Central cache population or verification failed. Server remains running."
+
+DEPLOY_CACHE="$SERVER_UPDATE_CACHE"
+if [[ "$INITIAL_ACTIVE_HOST" == "ubuntu" ]]; then
+    stage_remote_cache "$TMP_DIR/cache.log"
+    DEPLOY_CACHE="$REMOTE_CACHE_DIR"
+fi
+
+echo
+echo "========== FINAL TWO-HOST RECHECK =========="
+probe_both_hosts
+[[ "$ACTIVE_HOST" == "$INITIAL_ACTIVE_HOST" ]] ||
+    die "The active host changed while artifacts were being staged. No update was started."
+[[ "$ACTIVE_GENERATION_ID" == "$INITIAL_ACTIVE_GENERATION_ID" ]] ||
+    die "The active generation changed while artifacts were being staged. Obtain a fresh plan."
+FINAL_ACTIVE_HOST="$ACTIVE_HOST"
+
+echo
+echo "This will update only Paper and the already-installed managed Geyser/Floodgate components."
+echo "The selected $ACTIVE_HOST server will be gracefully stopped and restarted."
+echo "No full backup, unrelated plugin changes, datapack operations, or component installation will occur."
+printf 'To authorize this live update, type UPDATE-HSMP-%s: ' "${ACTIVE_HOST^^}"
+IFS= read -r confirmation
+[[ "$confirmation" == "UPDATE-HSMP-${ACTIVE_HOST^^}" ]] ||
+    die "Confirmation did not match. No live update was started."
+
+acquire_peer_lifecycle_lock
+
+echo
+echo "========== POST-CONFIRMATION HOST AND GENERATION RECHECK =========="
+probe_both_hosts
+[[ "$ACTIVE_HOST" == "$INITIAL_ACTIVE_HOST" ]] ||
+    die "Active host changed after confirmation. No server stop was requested."
+[[ "$ACTIVE_GENERATION_ID" == "$INITIAL_ACTIVE_GENERATION_ID" ]] ||
+    die "Active generation changed after confirmation. No server stop was requested."
+[[ "$PEER_HOST" == "$INITIAL_PEER_HOST" ]] ||
+    die "Inactive host identity changed after confirmation. No server stop was requested."
+[[ "$PEER_GENERATION_ID" == "$INITIAL_PEER_GENERATION_ID" ]] ||
+    die "Inactive host generation changed after confirmation. No server stop was requested."
+
+echo
+echo "========== EXECUTE ON VERIFIED ACTIVE HOST =========="
+if run_active_core_update --execute "$DEPLOY_CACHE" "$INITIAL_ACTIVE_GENERATION_ID" | tee "$TMP_DIR/operation.log"; then
+    grep -Eq "CORE_UPDATE=(SUCCESS|ALREADY_CURRENT)" "$TMP_DIR/operation.log" ||
+        die "Updater did not report a verified successful component transaction. Inspect the active server."
+else
+    die "Core update command failed. Do not force-kill Java; inspect the selected host and its retained recovery files."
+fi
+
+RESULT_GENERATION_ID="$(grep -E '^GENERATION_ID=' "$TMP_DIR/operation.log" | tail -n 1 | cut -d= -f2-)"
+[[ -n "$RESULT_GENERATION_ID" ]] || die "Update output omitted its final generation identity."
+
+verify_final_running_state "$RESULT_GENERATION_ID"
+
+echo
+echo "========== CORE UPDATE FINAL VERIFICATION =========="
+echo "CORE_UPDATE=SUCCESS"
+echo "ACTIVE_HOST=$ACTIVE_HOST"
+echo "GENERATION=$ACTIVE_GENERATION"
+echo "GENERATION_ID=$ACTIVE_GENERATION_ID"
+echo "FINAL_STATE=RUNNING"
+echo "INACTIVE_HOST=$PEER_HOST"
+echo "INACTIVE_STATE=STOPPED"
+echo "The central cache remains at: $SERVER_UPDATE_CACHE"
