@@ -35,7 +35,7 @@ TARGETS = {
     },
 }
 WIDTH_RE = re.compile(
-    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?)\s+blocks?\s+wide",
+    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s+blocks?\s+wide",
     re.IGNORECASE,
 )
 
