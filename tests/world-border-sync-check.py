@@ -57,7 +57,7 @@ class WorldBorderSyncTests(unittest.TestCase):
 
     def test_both_changed_inconsistently_are_rejected(self) -> None:
         previous = {OW: 20000.0, NETHER: 2500.0}
-        current = {OW: 16000.0, NETHER: 2500.0}
+        current = {OW: 16000.0, NETHER: 3000.0}
         with self.assertRaises(SystemExit):
             module.calculate_targets(current, previous)
 
