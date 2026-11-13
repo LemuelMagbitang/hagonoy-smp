@@ -27,6 +27,7 @@ assert border["TARGETS"]["minecraft:the_end"]["diameter"] == 20000
 assert border["TARGETS"]["minecraft:the_end"]["change_diameter"] is False
 assert border["WIDTH_RE"].search("The world border is currently 10000 blocks wide")
 assert border["WIDTH_RE"].search("The world border is currently 10000 block wide")
+assert border["tmux_pane_target"]("mcserver") == "=mcserver:"
 scientific_width = border["WIDTH_RE"].search(
     "The world border is currently 5.9999976E7 blocks wide"
 )
