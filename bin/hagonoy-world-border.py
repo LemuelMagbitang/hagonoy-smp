@@ -138,7 +138,7 @@ def console_send(host: str, target: str, session: str, command: str) -> None:
 
 def console_capture(host: str, target: str, session: str) -> str:
     if host == "WINDOWS":
-        return run(["tmux", "capture-pane", "-p", "-t", f"={session}", "-S", "-120"])
+        return run(["tmux", "capture-pane", "-p", "-t", tmux_pane_target(session), "-S", "-120"])
     return run([
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target,
         "tmux", "capture-pane", "-p", "-t", tmux_pane_target(session), "-S", "-120",
