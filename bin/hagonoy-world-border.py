@@ -40,6 +40,11 @@ WIDTH_RE = re.compile(
 )
 
 
+def tmux_pane_target(session: str) -> str:
+    """Select the exact session's active window/pane for pane-target commands."""
+    return f"={session}:"
+
+
 def fail(message: str) -> "NoReturn":
     print(f"[hagonoy] ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -122,10 +127,10 @@ def ubuntu_state(target: str, session: str, port: str) -> str:
 
 def console_send(host: str, target: str, session: str, command: str) -> None:
     if host == "WINDOWS":
-        run(["tmux", "send-keys", "-t", f"={session}", command, "C-m"])
+        run(["tmux", "send-keys", "-t", tmux_pane_target(session), command, "C-m"])
     else:
         remote = (
-            "tmux send-keys -t " + shlex.quote("=" + session) + " "
+            "tmux send-keys -t " + shlex.quote(tmux_pane_target(session)) + " "
             + shlex.quote(command) + " C-m"
         )
         run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, remote])
@@ -136,7 +141,7 @@ def console_capture(host: str, target: str, session: str) -> str:
         return run(["tmux", "capture-pane", "-p", "-t", f"={session}", "-S", "-120"])
     return run([
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target,
-        "tmux", "capture-pane", "-p", "-t", f"={session}", "-S", "-120",
+        "tmux", "capture-pane", "-p", "-t", tmux_pane_target(session), "-S", "-120",
     ])
 
 
