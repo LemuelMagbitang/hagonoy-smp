@@ -29,7 +29,7 @@ CENTERS = {
 SCALE = 8.0
 WIDTH_RE = re.compile(
     r"world border is currently\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
-    r"\s+(?:blocks?|block\\(s\\))\s+wide",
+    r"\s+(?:blocks?|block\(s\))\s+wide",
     re.IGNORECASE,
 )
 
