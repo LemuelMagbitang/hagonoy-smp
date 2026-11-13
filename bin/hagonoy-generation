@@ -142,6 +142,13 @@ def run_command(command):
     return result.stdout.strip()
 
 
+def minecraft_version_from_paper_version(paper_version):
+    """Extract the Minecraft release encoded in a Paper build identifier."""
+    if not isinstance(paper_version, str):
+        return None
+    match = re.match(r"^(\d+(?:\.\d+){1,2})(?:-|$)", paper_version)
+    return match.group(1) if match else None
+
 
 def query_runtime_versions_from_console(session):
     """Read fresh Paper/Minecraft versions from the live tmux console."""
@@ -193,12 +200,9 @@ def query_runtime_versions_from_console(session):
                 # Do not parse the API suffix: modern Paper uses values such
                 # as 26.3.build.244-stable, while older releases used
                 # 1.21.4-R0.1-SNAPSHOT. That API format is not needed here.
-                minecraft_match = re.match(
-                    r"^(\d+(?:\.\d+){1,2})-\d+(?:-|$)",
-                    paper_version,
-                )
-                if minecraft_match:
-                    return paper_version, minecraft_match.group(1)
+                minecraft_version = minecraft_version_from_paper_version(paper_version)
+                if minecraft_version:
+                    return paper_version, minecraft_version
 
         time.sleep(0.25)
 
@@ -298,6 +302,9 @@ if ($ids.Count -eq 1) {{
                 q = re.search(r"This server is running Paper version\s+(\S+)", line)
                 if m: mc = m.group(1)
                 if q: pr = q.group(1)
+
+    if not mc and pr:
+        mc = minecraft_version_from_paper_version(pr)
 
     if not mc or not pr:
         pr, mc = query_runtime_versions_from_console(session)
@@ -444,6 +451,9 @@ def verify_running_server(
                         paper_version = match.group(1)
         except OSError as exc:
             fail(f"Cannot read server log: {exc}")
+
+    if not minecraft_version and paper_version:
+        minecraft_version = minecraft_version_from_paper_version(paper_version)
 
     if not minecraft_version or not paper_version:
         paper_version, minecraft_version = query_runtime_versions_from_console(session)
