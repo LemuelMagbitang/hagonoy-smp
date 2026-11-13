@@ -161,21 +161,37 @@ The checker/updater requires `curl`, `jq`, `sha256sum`, and Python 3. Python's s
 
 ## 9. HSMP maintenance: world borders and addon inventory
 
-The WSL dual-host coordinator includes a read-only world-border plan:
+The WSL dual-host coordinator provides a read-only bidirectional Overworld/Nether border plan:
 
 ```bash
 ./hagonoy border --plan
 ```
 
-The approved targets are full border diameters, not radii: Overworld 12,500 centered at X=-2349, Z=38; Nether 3,125 centered at X=-293.625, Z=4.75; and End diameter unchanged (the recorded baseline is 20,000) centered at X=0, Z=0. The Nether center is the Overworld center divided by eight. The End diameter is never set by this command.
+The Overworld and Nether border **diameters** (full widths) must stay in an 8:1 ratio because Nether horizontal travel coordinates are scaled by eight. If only the Overworld diameter has changed since the last successful synchronization, the Nether target is calculated as Overworld / 8. If only the Nether diameter has changed, the Overworld target is calculated as Nether * 8. If both were changed, they must already agree at 8:1; otherwise the command stops rather than guessing which dimension is authoritative.
 
-To apply the Overworld and Nether expansion and set all three centers:
+The current user-confirmed centers are Overworld X=-2349, Z=38; Nether X=-293, Z=4; End X=0, Z=0. The border command does not query or modify centers; it changes diameters only. The End remains independent and is never changed by this synchronizer.
+
+On first use, the command accepts the live Overworld/Nether pair as its baseline only if the pair already matches 8:1. Apply once to save that baseline locally; this initialization does not change any border. The local state file is `.hagonoy-world-border-state.json` and is ignored by Git. Later plans compare the live widths with the last successfully verified pair to detect which dimension was manually changed. If both changed inconsistently, or the first-use pair is inconsistent, it refuses to guess.
+
+Review the proposed change:
+
+```bash
+./hagonoy border --plan
+```
+
+When ready, apply the displayed plan:
 
 ```bash
 ./hagonoy border --apply
 ```
 
-The command checks which canonical host is running and reads all three current diameters. It refuses uncertain or dual-running host states and refuses to shrink an Overworld or Nether border that is already wider than its target. It then requires the exact interactive phrase `APPLY HSMP BORDER 12500 3125 KEEP-END`, applies dimension-specific commands, and verifies the resulting diameters. The End diameter is queried before and after and must remain unchanged. Border application does not restart Minecraft.
+Apply requires an exact confirmation phrase containing both target diameters. If a target would shrink a border, the confirmation phrase additionally includes `ALLOW-SHRINK`; the plan warns that players near the affected edge may be outside the new border. After applying, the script reads back and verifies both diameters and confirms the End diameter remained unchanged before saving the new local baseline. It does not restart Minecraft. Keep the local state file with the coordinator checkout; if it is lost, first-use initialization will require the live Overworld/Nether widths to already match 8:1.
+
+The isolated synchronization-rule tests can be run with:
+
+```bash
+python3 tests/world-border-sync-check.py
+```
 
 The one-command update preview is read-only:
 
