@@ -26,11 +26,10 @@ CENTERS = {
     NETHER: ("-293", "4"),
     END: ("0", "0"),
 }
-END_BASELINE = 20000
 SCALE = 8.0
 WIDTH_RE = re.compile(
-    r"world border is currently\\s+([0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
-    r"\\s+(?:blocks?|block\\(s\\))\\s+wide",
+    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
+    r"\s+(?:blocks?|block\\(s\\))\s+wide",
     re.IGNORECASE,
 )
 
