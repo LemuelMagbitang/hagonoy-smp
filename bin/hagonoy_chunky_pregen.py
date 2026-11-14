@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import fcntl
 import re
 import shlex
@@ -278,6 +279,27 @@ def fingerprint_matches(saved: dict[str, object], desired: dict[str, object]) ->
     return str(saved.get("shape", "")).lower() == "square"
 
 
+def active_task_matches(
+    host: str,
+    ssh_target: str,
+    server_dir: str,
+    world: str,
+    desired: dict[str, object],
+    state_entry: object = None,
+) -> bool:
+    saved_properties, event = task_snapshot(host, ssh_target, server_dir, world)
+    saved = task_fingerprint_from_properties(saved_properties)
+    if saved is not None and fingerprint_matches(saved, desired):
+        return True
+    if (
+        event is not None
+        and event[0] in {"started", "continued"}
+        and fingerprint_matches(event[1], desired)
+    ):
+        return True
+    return event is None and isinstance(state_entry, dict) and fingerprint_matches(state_entry, desired)
+
+
 def task_fingerprint_from_properties(values: dict[str, str]) -> dict[str, object] | None:
     try:
         radius = float(values["radius"])
@@ -471,22 +493,10 @@ def sync_world(
     active_worlds = progress_worlds(console)
     is_active = world in active_worlds
 
-    if is_active:
-        same_saved = saved is not None and fingerprint_matches(saved, current)
-        same_logged = (
-            event is not None
-            and event[0] in {"started", "continued"}
-            and fingerprint_matches(event[1], current)
-        )
-        same_recent_state = (
-            event is None
-            and isinstance(state_entry, dict)
-            and fingerprint_matches(state_entry, current)
-        )
-        if same_saved or same_logged or same_recent_state:
-            worlds_state[world] = {**current, "status": "running"}
-            save_pregen_state(state)
-            return "already running"
+    if is_active and active_task_matches(host, ssh_target, server_dir, world, current, state_entry):
+        worlds_state[world] = {**current, "status": "running"}
+        save_pregen_state(state)
+        return "already running"
 
     if saved is not None and fingerprint_matches(saved, current):
         is_cancelled = props.get("cancelled", "true").strip().lower() == "true"
@@ -507,6 +517,10 @@ def sync_world(
             ))
             if re.search(r"No tasks to continue\.", output, re.IGNORECASE):
                 fail(f"{world}: Chunky had an incomplete saved task but refused to continue it.")
+            if ALREADY_ACTIVE_RE.search(output) and not active_task_matches(
+                host, ssh_target, server_dir, world, current, worlds_state.get(world)
+            ):
+                fail(f"{world}: Chunky reported another active task whose selection does not match this border.")
             worlds_state[world] = {**current, "status": "running"}
             save_pregen_state(state)
             return "resumed"
@@ -535,6 +549,8 @@ def sync_world(
         timeout=10,
     ))
     if ALREADY_ACTIVE_RE.search(output):
+        if not active_task_matches(host, ssh_target, server_dir, world, current, worlds_state.get(world)):
+            fail(f"{world}: Chunky reported an active task whose saved selection does not match this border.")
         worlds_state[world] = {**current, "status": "running"}
         save_pregen_state(state)
         return "already running"
