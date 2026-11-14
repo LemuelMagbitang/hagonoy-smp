@@ -19,12 +19,19 @@ def load(path: Path):
 
 
 border = load(ROOT / "bin" / "hagonoy-world-border.py")
-assert border["TARGETS"]["minecraft:overworld"]["diameter"] == 12500
-assert border["TARGETS"]["minecraft:overworld"]["center"] == ("-2349", "38")
-assert border["TARGETS"]["minecraft:the_nether"]["diameter"] == 3125
-assert border["TARGETS"]["minecraft:the_nether"]["center"] == ("-293.625", "4.75")
-assert border["TARGETS"]["minecraft:the_end"]["diameter"] == 20000
-assert border["TARGETS"]["minecraft:the_end"]["change_diameter"] is False
+assert border["SCALE"] == 8.0
+assert border["CENTERS"]["minecraft:overworld"] == ("-2349", "38")
+assert border["CENTERS"]["minecraft:the_nether"] == ("-293", "4")
+assert border["CENTERS"]["minecraft:the_end"] == ("0", "0")
+assert border["END"] == "minecraft:the_end"
+assert border["ratio_matches"]({
+    border["OVERWORLD"]: 20000,
+    border["NETHER"]: 2500,
+})
+assert not border["ratio_matches"]({
+    border["OVERWORLD"]: 20000,
+    border["NETHER"]: 3000,
+})
 assert border["WIDTH_RE"].search("The world border is currently 10000 blocks wide")
 assert border["WIDTH_RE"].search("The world border is currently 10000 block wide")
 parenthesized_width = border["WIDTH_RE"].search("The world border is currently 10000 block(s) wide")

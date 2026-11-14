@@ -29,5 +29,6 @@ bash "$ROOT/tests/dual-paper-update-api-check.sh"
 bash "$ROOT/tests/dual-paper-update-plan-check.sh"
 bash "$ROOT/tests/dual-paper-update-execution-check.sh"
 
+python3 "$ROOT/tests/world-border-sync-check.py"
 python3 "$ROOT/tests/maintenance-tools-check.py"
 

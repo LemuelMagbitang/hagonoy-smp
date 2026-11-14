@@ -1,48 +1,37 @@
 #!/usr/bin/env python3
-"""Plan-first world-border maintenance for the HSMP dual-host coordinator."""
+"""Plan-first bidirectional Overworld/Nether border synchronizer."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "config" / "dual-host.conf"
-
-# Border diameters are full widths, not radii.
-TARGETS = {
-    "minecraft:overworld": {
-        "label": "Overworld",
-        "center": ("-2349", "38"),
-        "diameter": 12500,
-        "change_diameter": True,
-    },
-    "minecraft:the_nether": {
-        "label": "Nether",
-        "center": ("-293.625", "4.75"),
-        "diameter": 3125,
-        "change_diameter": True,
-    },
-    "minecraft:the_end": {
-        "label": "End",
-        "center": ("0", "0"),
-        "diameter": 20000,
-        "change_diameter": False,
-    },
+STATE = ROOT / ".hagonoy-world-border-state.json"
+OVERWORLD = "minecraft:overworld"
+NETHER = "minecraft:the_nether"
+END = "minecraft:the_end"
+DIMENSIONS = (OVERWORLD, NETHER, END)
+LABELS = {OVERWORLD: "Overworld", NETHER: "Nether", END: "End"}
+# Current, user-confirmed centers are informational and intentionally untouched.
+CENTERS = {
+    OVERWORLD: ("-2349", "38"),
+    NETHER: ("-293", "4"),
+    END: ("0", "0"),
 }
+SCALE = 8.0
 WIDTH_RE = re.compile(
-    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s+(?:blocks?|block\(s\))\s+wide",
+    r"world border is currently\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
+    r"\s+(?:blocks?|block\(s\))\s+wide",
     re.IGNORECASE,
 )
-
-
-def tmux_pane_target(session: str) -> str:
-    """Select the exact session's active window/pane for pane-target commands."""
-    return f"={session}:"
 
 
 def fail(message: str) -> "NoReturn":
@@ -50,12 +39,9 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
-def run(args: list[str], *, input_text: str | None = None, timeout: int = 15) -> str:
+def run(args: list[str], *, timeout: int = 15) -> str:
     try:
-        result = subprocess.run(
-            args, input=input_text, text=True, capture_output=True,
-            timeout=timeout, check=False,
-        )
+        result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail(f"Command failed: {args[0]} ({exc})")
     if result.returncode:
@@ -77,6 +63,10 @@ def config_values() -> tuple[str, str, str, str]:
     if len(values) != 4 or any(not value for value in values):
         fail("Dual-host configuration is missing a required border-maintenance setting.")
     return tuple(values)  # type: ignore[return-value]
+
+
+def tmux_pane_target(session: str) -> str:
+    return f"={session}:"
 
 
 def windows_state(session: str, port: str) -> str:
@@ -150,7 +140,6 @@ def query_width(host: str, target: str, session: str, dimension: str) -> float:
     before = console_capture(host, target, session)
     before_count = len(WIDTH_RE.findall(before))
     console_send(host, target, session, command)
-
     deadline = time.monotonic() + 8
     latest = before
     while time.monotonic() < deadline:
@@ -166,68 +155,166 @@ def query_width(host: str, target: str, session: str, dimension: str) -> float:
     )
 
 
-def display_plan(widths: dict[str, float]) -> None:
-    print("========== HSMP WORLD-BORDER MAINTENANCE PLAN ==========")
-    print("These are full border diameters; no Y coordinate is used (Minecraft uses X/Z).")
-    print()
-    for dimension, spec in TARGETS.items():
-        current = widths[dimension]
-        center = ", ".join(spec["center"])
-        if spec["change_diameter"]:
-            action = f"{current:g} -> {spec['diameter']} blocks"
-        else:
-            action = f"{current:g} blocks (must remain unchanged; recorded target {spec['diameter']})"
-        print(f"{spec['label']}:")
-        print(f"  Current width:  {current:g}")
-        print(f"  Target width:   {action}")
-        if not spec["change_diameter"] and current != spec["diameter"]:
-            print("  WARNING: End width differs from the 20,000-block baseline; it will not be changed.")
-        print(f"  Center to set:  X {center.split(', ')[0]}, Z {center.split(', ')[1]}")
-    print()
-    print("Nether center is the Overworld center divided by 8: (-293.625, 4.75).")
-    print("End width is deliberately not changed; only its center is set to (0, 0).")
-    print("Apply changes only with: ./hagonoy border --apply")
+def ratio_matches(widths: dict[str, float]) -> bool:
+    return abs(widths[OVERWORLD] - widths[NETHER] * SCALE) <= 0.01
 
 
-def apply_plan(host: str, target: str, session: str, widths: dict[str, float]) -> None:
-    for dimension, spec in TARGETS.items():
-        if spec["change_diameter"] and widths[dimension] > spec["diameter"]:
+def load_state() -> dict[str, float] | None:
+    if not STATE.exists():
+        return None
+    try:
+        raw = json.loads(STATE.read_text(encoding="utf-8"))
+        if raw.get("schema") != 1:
+            fail(f"Unsupported world-border state schema in {STATE}.")
+        widths = raw["widths"]
+        result = {OVERWORLD: float(widths[OVERWORLD]), NETHER: float(widths[NETHER])}
+        if any(value <= 0 for value in result.values()):
+            fail(f"Invalid non-positive width in {STATE}.")
+        return result
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        fail(f"Cannot read valid world-border synchronization state {STATE}: {exc}")
+
+
+def save_state(widths: dict[str, float]) -> None:
+    payload = {
+        "schema": 1,
+        "scale": 8,
+        "widths": {
+            OVERWORLD: widths[OVERWORLD],
+            NETHER: widths[NETHER],
+        },
+        "note": "Last successfully verified Overworld/Nether border diameters. End is independent.",
+    }
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".hagonoy-world-border-", dir=STATE.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, STATE)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def calculate_targets(
+    current: dict[str, float], previous: dict[str, float] | None
+) -> tuple[dict[str, float], str, bool]:
+    """Return target widths, explanation, and whether this is state initialization."""
+    if previous is None:
+        if not ratio_matches(current):
             fail(
-                f"{spec['label']} is already wider than the approved target "
-                f"({widths[dimension]:g} > {spec['diameter']}). Refusing to shrink it."
+                "No synchronization baseline exists and the live Overworld/Nether widths "
+                "are not in an 8:1 ratio. Refusing to guess which dimension is authoritative."
             )
+        return dict(current), "Initialize baseline from the already-matching live borders", True
 
-    print("[hagonoy] Sending dimension-specific world-border commands...")
-    for dimension, spec in TARGETS.items():
-        x, z = spec["center"]
+    ow_changed = abs(current[OVERWORLD] - previous[OVERWORLD]) > 0.01
+    nether_changed = abs(current[NETHER] - previous[NETHER]) > 0.01
+
+    if not ow_changed and not nether_changed:
+        if not ratio_matches(current):
+            fail("Live borders no longer match the saved 8:1 baseline; refusing an ambiguous sync.")
+        return dict(current), "No changes detected; borders are already synchronized", False
+
+    if ow_changed and nether_changed:
+        if not ratio_matches(current):
+            fail(
+                "Both Overworld and Nether widths changed since the last sync and no longer "
+                "match 8:1. Choose one authoritative dimension manually; no changes were made."
+            )
+        return dict(current), "Both dimensions were changed and already agree at 8:1", False
+
+    if ow_changed:
+        target = {OVERWORLD: current[OVERWORLD], NETHER: current[OVERWORLD] / SCALE}
+        return target, "Overworld changed; derive Nether diameter = Overworld / 8", False
+
+    target = {NETHER: current[NETHER], OVERWORLD: current[NETHER] * SCALE}
+    return target, "Nether changed; derive Overworld diameter = Nether * 8", False
+
+
+def display_plan(
+    current: dict[str, float],
+    targets: dict[str, float],
+    end_width: float,
+    explanation: str,
+    initializing: bool,
+) -> None:
+    print("========== HSMP WORLD-BORDER SYNCHRONIZATION PLAN ==========")
+    print("Border widths below are full diameters. Minecraft horizontal axes are X and Z; Y is unused.")
+    print("Overworld/Nether coordinate and diameter scale: 8:1.")
+    print()
+    print(f"Decision: {explanation}")
+    for dimension in (OVERWORLD, NETHER):
+        now, target = current[dimension], targets[dimension]
+        delta = target - now
+        change = "no change" if abs(delta) <= 0.01 else f"{delta:+g} blocks"
+        center = CENTERS[dimension]
+        print(f"{LABELS[dimension]}:")
+        print(f"  Current diameter: {now:g}")
+        print(f"  Planned diameter: {target:g} ({change})")
+        print(f"  Center reference: X {center[0]}, Z {center[1]} (not queried or modified)")
+    print(f"End:")
+    print(f"  Current diameter: {end_width:g} (independent; will not be changed)")
+    print(f"  Center reference: X {CENTERS[END][0]}, Z {CENTERS[END][1]} (not queried or modified)")
+    if initializing:
+        print()
+        print("No world-border command is needed. --apply will record the current verified widths as the baseline.")
+    print()
+    print("The synchronizer changes diameters only. It does not move centers, edit the End, or restart the server.")
+
+
+def apply_targets(
+    host: str, target: str, session: str, current: dict[str, float],
+    targets: dict[str, float], end_width: float
+) -> None:
+    for dimension in (OVERWORLD, NETHER):
+        desired = targets[dimension]
+        if abs(current[dimension] - desired) <= 0.01:
+            continue
         console_send(
             host, target, session,
-            f"execute in {dimension} run worldborder center {x} {z}",
+            f"execute in {dimension} run worldborder set {desired:.12g} 0",
         )
-        if spec["change_diameter"] and widths[dimension] != spec["diameter"]:
-            console_send(
-                host, target, session,
-                f"execute in {dimension} run worldborder set {spec['diameter']} 0",
-            )
-        print(f"[hagonoy] {spec['label']}: center command sent.")
 
-    after: dict[str, float] = {}
-    for dimension in TARGETS:
-        after[dimension] = query_width(host, target, session, dimension)
-
-    for dimension, spec in TARGETS.items():
-        expected = spec["diameter"] if spec["change_diameter"] else widths[dimension]
-        if after[dimension] != expected:
+    after = {
+        dimension: query_width(host, target, session, dimension)
+        for dimension in DIMENSIONS
+    }
+    for dimension in (OVERWORLD, NETHER):
+        expected = targets[dimension]
+        if abs(after[dimension] - expected) > 0.01:
             fail(
-                f"{spec['label']} width verification failed: expected {expected:g}, "
-                f"got {after[dimension]:g}. Check the server console before retrying."
+                f"{LABELS[dimension]} width verification failed: expected {expected:g}, "
+                f"got {after[dimension]:g}. The baseline was not updated; inspect the server console."
             )
+    if abs(after[END] - end_width) > 0.01:
+        fail(
+            f"End width changed unexpectedly during synchronization "
+            f"({end_width:g} -> {after[END]:g}). The baseline was not updated."
+        )
+    if not ratio_matches(after):
+        fail("Post-apply Overworld/Nether 8:1 verification failed. The baseline was not updated.")
+
+    try:
+        save_state(after)
+    except OSError as exc:
+        fail(
+            f"Borders were verified, but the local synchronization baseline could not be saved: {exc}. "
+            "Do not repeat changes blindly; inspect the live widths first."
+        )
 
     print()
-    print("[hagonoy] Width verification passed:")
-    for dimension, spec in TARGETS.items():
-        print(f"  {spec['label']}: {after[dimension]:g} blocks")
-    print("[hagonoy] End diameter was preserved. Center commands were sent for all dimensions.")
+    print("[hagonoy] Verified synchronized diameters:")
+    print(f"  Overworld: {after[OVERWORLD]:g}")
+    print(f"  Nether:    {after[NETHER]:g}")
+    print(f"  End:       {after[END]:g} (unchanged)")
+    print("[hagonoy] Synchronization baseline saved. Border centers were not modified.")
     print("[hagonoy] No server restart was requested.")
 
 
@@ -238,7 +325,6 @@ def main() -> None:
     windows_session, ubuntu_target, ubuntu_session, port = config_values()
     win = windows_state(windows_session, port)
     ubu = ubuntu_state(ubuntu_target, ubuntu_session, port)
-
     print(f"Windows canonical: {win}")
     print(f"Ubuntu canonical:  {ubu}")
     if win == "UNKNOWN" or ubu == "UNKNOWN":
@@ -253,25 +339,34 @@ def main() -> None:
     else:
         host, target, session = "WINDOWS", "", windows_session
 
-    widths = {
+    current = {
         dimension: query_width(host, target, session, dimension)
-        for dimension in TARGETS
+        for dimension in DIMENSIONS
     }
-    display_plan(widths)
+    pair = {OVERWORLD: current[OVERWORLD], NETHER: current[NETHER]}
+    targets, explanation, initializing = calculate_targets(pair, load_state())
+    display_plan(pair, targets, current[END], explanation, initializing)
 
     if sys.argv[1] == "--plan":
-        print("[hagonoy] PLAN ONLY. No world-border settings were changed.")
+        print("[hagonoy] PLAN ONLY. No world-border settings or synchronization state were changed.")
         return
 
+    shrink = any(targets[d] < pair[d] - 0.01 for d in (OVERWORLD, NETHER))
+    phrase = (
+        f"APPLY HSMP BORDER OW {targets[OVERWORLD]:g} NETHER {targets[NETHER]:g}"
+        + (" ALLOW-SHRINK" if shrink else "")
+    )
     print()
-    print("This will expand the Overworld to 12,500 and Nether to 3,125.")
-    print("The End diameter will remain exactly as queried; its center will be set to 0, 0.")
-    print("The server stays online; this changes border settings only.")
-    answer = input("Type APPLY HSMP BORDER 12500 3125 KEEP-END to proceed: ").strip()
-    if answer != "APPLY HSMP BORDER 12500 3125 KEEP-END":
-        print("[hagonoy] Cancelled. No world-border settings were changed.")
+    if shrink:
+        print("[hagonoy] WARNING: This plan shrinks at least one live border.")
+        print("[hagonoy] Players near the affected edge may become outside the new border.")
+    print("Only Overworld and Nether diameters can change. Centers and End remain untouched.")
+    print(f"To confirm this exact plan, type: {phrase}")
+    answer = input("> ").strip()
+    if answer != phrase:
+        print("[hagonoy] Cancelled. No world-border settings or synchronization state were changed.")
         return
-    apply_plan(host, target, session, widths)
+    apply_targets(host, target, session, pair, targets, current[END])
 
 
 if __name__ == "__main__":
