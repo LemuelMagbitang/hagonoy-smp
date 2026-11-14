@@ -52,7 +52,7 @@ NO_TASKS_RE = re.compile(r"No tasks to cancel\.", re.IGNORECASE)
 CANCEL_PROMPT_RE = re.compile(r"Cancelled tasks cannot be continued", re.IGNORECASE)
 CANCELLED_RE = re.compile(r"Task cancelled for ", re.IGNORECASE)
 PAUSED_RE = re.compile(r"Task paused for ", re.IGNORECASE)
-NO_TASKS_PAUSE_RE = re.compile(r"No tasks to pause\\.", re.IGNORECASE)
+NO_TASKS_PAUSE_RE = re.compile(r"No tasks to pause\.", re.IGNORECASE)
 PROGRESS_RE = re.compile(r"Task running for (.+?)\. Processed:", re.IGNORECASE)
 NO_PROGRESS_RE = re.compile(r"No tasks running\.", re.IGNORECASE)
 TASK_LOG_RE = re.compile(r"^\[[^\]]+\]\s+(\w+)\s+(.*)$")
@@ -378,7 +378,7 @@ def pause_world_task(console: Console, host: str, ssh_target: str, server_dir: s
 
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
-        props, event = task_snapshot(host, ssh_target, server_dir, world)
+        _, event = task_snapshot(host, ssh_target, server_dir, world)
         active = world in progress_worlds(console)
         if not active and event is not None and event[0] == "paused":
             # GenerationTask schedules bounded asynchronous chunk loads. Give
