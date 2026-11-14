@@ -1,6 +1,6 @@
 # HSMP Project Memory
 
-Last updated: 2026-11-13 (Asia/Manila)
+Last updated: 2026-11-14 (Asia/Manila)
 
 This is a continuity aid, not the project authority. The user's explicit decisions and clarifications are authoritative. Keep this file factual and current; never let older notes or legacy scripts override the user's direction.
 
@@ -13,9 +13,25 @@ This is a continuity aid, not the project authority. The user's explicit decisio
 - The user's decisions are the source of truth. The repository is the implementation workspace and version-control record. Legacy scripts are references only, not the authority.
 - Separate user-confirmed facts, historical command output, and unverified current state. Never claim local or server changes that were not made.
 
-## Current controlling checkpoint — 2026-11-13
+## Current controlling checkpoint — 2026-11-14
 
-This section supersedes older dated work-focus and immediate-sequence sections below whenever they conflict.
+This section supersedes every older active-priority or status section below.
+
+- **Core Paper/Geyser/Floodgate updater: COMPLETE.** PR #4 was merged to `main` on 2026-11-13 (merge commit `c347fa7b54f33a9c7795a45ff1329c80210a1237`). The 2026-11-14 live execution successfully updated Paper 26.3 build 249 -> 251, confirmed Geyser 2.12.1 and Floodgate 2.2.5 already current, and reported `CORE_UPDATE=SUCCESS`, `FINAL_STATE=RUNNING`, `ACTIVE_HOST=ubuntu`, generation 8, ID `a4533185-481d-4083-bd1d-5f4a1f229b3c`.
+- Post-update readback confirmed the Ubuntu generation manifest running on Paper 26.3 build 251, Floodgate and Geyser enabled, Geyser's Bedrock UDP listener on port 19132 owned by Java, and Paper startup readiness. Windows was the inactive/stopped peer. No further core update is needed in the current task.
+- User direction for this phase: **no server updates or changes; only maintain and finish the tools and maintenance scripts.** Do not run live update, plugin/datapack sync, reload, stop/start, backup, or host sync unless separately authorized.
+- **Active workstream: add-on maintenance tooling.** First restore the separate additive-only VanillaTweaks datapack manager; then complete a distinct updater for already-installed, explicitly managed Paper plugins. Do not merge either workflow into the core Paper/Geyser/Floodgate updater.
+- The 13 approved VanillaTweaks packs were already confirmed enabled in the Ubuntu live world on 2026-11-12. Do not redeploy or reload them for this tooling work.
+- Current GitHub `main` dispatcher routes `./hagonoy addons` to `bin/hagonoy-datapacks.py`, but `bin/hagonoy-datapacks.py`, `bin/hagonoy-datapacks-remote.py`, and `tests/datapack-deploy-check.py` are absent from `main`. The existing `bin/hagonoy-addons.py` is only a read-only inventory, not an updater. The actual registered 13-pack manifest is local approval state and must not be replaced or committed from an empty template.
+- Recovered the latest hardened three-file datapack implementation from the project Library. Verified SHA-256: manager `1ebc2a13aab514e134b6469911961f5d584c60e745a205ae579f575d74d6a70d`; remote helper `c2e340e15076a16de917372f913f3a1f236adcf5601ec1d6ebbd8d39544ca738`; test suite `b1819761e4c0964ede6cc7663275d175868a0272973d8ae270e26747e83b8a13`. Compilation and the full offline datapack fixture suite pass.
+- A guarded recovery package was prepared at `hsmp-datapack-manager-recovery.zip` (SHA-256 `d16709f531289c40f844f8526647babf149296cdf2cbd5ad4c70f804e45553e5`). Its installer checks dispatcher routing, absence of automatic lifecycle sync hooks, source hashes, and safe test-runner insertion. It deliberately does not read or modify `config/approved-datapacks.json`. Its installer passed temporary-repository, idempotence, and manifest-preservation tests.
+- The recovery package has **not** been applied to the user's WSL checkout or published as repository source. The source files on the user's local checkout must be hash-checked and reconciled before any change or commit. No source-code commit or push is implied by this documentation checkpoint.
+- Paper is running as Paper/Bukkit, not Forge/Fabric. Treat "mods" as future/non-Paper content unless the user explicitly chooses a mod-loader server migration; never drop mod-loader JARs into Paper's `plugins/` folder.
+- No live server/world/plugin/datapack/config/backup operation occurred during the 2026-11-14 tooling recovery work.
+
+## Historical checkpoint — 2026-11-13 (superseded)
+
+This is a historical status record. Its core-updater blockers were resolved by the 2026-11-14 completion checkpoint above.
 
 - Active workstream: finish the combined core updater for Paper, already-installed Geyser, and already-installed Floodgate. VPN/firewall and account authentication are deferred. Native Minecraft commands/datapack functions/dialogs/command blocks are future feature considerations, not current work.
 - Server history: previous live Minecraft version was 26.1; current migrated version is 26.3. Do not state that the previous live server was 1.21.x.
@@ -36,25 +52,21 @@ This section supersedes older dated work-focus and immediate-sequence sections b
 
 ## Maintenance responsibilities and order
 
-### 1. Core server updater — current priority
+### 1. Core server updater — complete
 
-The normal updater is limited to Paper server software, Geyser, and Floodgate. Detect what is installed and update only those managed components. Do not install missing components or update unrelated plugins such as Chunky unless the user changes the scope.
+The separate core updater maintains Paper and already-installed Geyser-Spigot/Floodgate only. It uses the central artifact cache, fail-closed dual-host detection, verified staging, graceful lifecycle, atomic replacement/rollback, and startup/runtime readback. PR #4 is merged and the 2026-11-14 Paper 251 update was successful. Do not change its scope or run another update as part of the current tool-only phase.
 
-Discover current stable releases from official upstream sources without asking the user to type component names or versions. The Windows update-downloads folder is the designated central update-artifact cache: compare it with upstream releases, download newer verified artifacts into it, atomically replace cached artifacts only after verification, then transfer/re-verify/deploy to the positively identified active canonical host (Ubuntu or Windows). Detect the active host before every relevant transfer or live operation; never hard-code Ubuntu. If host status is unknown, conflicting, unreachable, both active, or both stopped, fail closed. Stage safely; save and gracefully stop only the verified active host; apply; restart that same host; verify readiness and resulting versions; recover/rollback safely on failure. Do not leave the server stopped when safe recovery is possible.
+### 2. VanillaTweaks datapack manager — active integration task
 
-Routine updates must not silently create full TAR backups. A full backup is a separate operation requiring its own explicit authorization. Temporary rollback artifacts are not full backups.
+Restore the already-tested manager and remote helper to the repository because `bin/hagonoy` already dispatches `addons` to the missing manager. Preserve the user's 13-pack manifest; never include a blank `config/approved-datapacks.json` in source recovery. Keep add/list/plan/sync separate: registration only records approvals; plan is read-only; sync alone performs an explicitly requested additive install. No overwrite, remove, prune, or auto-enable. Do not couple sync to start or core update.
 
-### 2. VanillaTweaks datapack maintenance — next distinct workflow
+### 3. Installed Paper-plugin updater — next distinct tool
 
-Datapack maintenance is a separate script/workflow after the core Paper/Geyser/Floodgate updater. Never couple datapack installation or sync to normal `start` or the core software `update` command.
+Build a separate updater that inventories installed plugins and updates only explicitly managed, already-installed plugin identities using verified publisher release metadata and hashes. It must not install new plugins, remove plugins, alter plugin data/configuration, or replace an artifact when identity, publisher, compatibility, or version comparison is ambiguous. Paper, Geyser, and Floodgate remain owned by the core updater and must not be duplicated here. Chunky world-border automation remains stopped and out of scope.
 
-The built-in `vanilla`, `bukkit`, and `paper` entries shown by `/datapack list` are not independent downloadable update targets. Paper is updated as server software. The custom world datapacks currently known are VanillaTweaks packs.
+### 4. Mod-loader content and other tools — deferred
 
-A local datapack manager and manifest were added; 13 VanillaTweaks packs were registered for Minecraft 26.3. Registration/planning is not proof of deployment. Confirm installed state before sync. Do not silently overwrite, remove, prune, or deploy packs. The separate workflow handles compatibility and updates for the approved VanillaTweaks set.
-
-### 3. Host switching and backup utilities — review after the above
-
-Host switching/moving the authoritative server between Ubuntu and Windows, and backup utilities, are separate responsibilities. They are believed to be largely in place, but the user wants to review them after the core updater and datapack workflow. Legacy scripts may inform behavior but are not the main implementation authority.
+A Paper server loads Paper/Bukkit plugins and datapacks, not Forge/Fabric server mods. Actual Forge/Fabric mod support would require a separately approved server-platform change; never treat mod JARs as Paper plugins. Review host switching and backup utilities after the addon manager work, without introducing automatic full backups.
 
 ## Known directory layout
 
@@ -77,7 +89,7 @@ These are the current intended/canonical paths. The user's latest explicit path 
 
 Windows server and staging paths appear in WSL as `/mnt/d/Hagonoy-SMP/...`. Do not infer a separate native Windows manager checkout; its location has not been established. Do not use the older `hsmp-evac-v2-win-backup` as the canonical backup vault; the user specified `server-backup` on both hosts.
 
-## Current known implementation state (2026-11-12)
+## Historical implementation state (2026-11-12; superseded by 2026-11-14 checkpoint above)
 
 - WSL branch last reported: `fix/border-console-pane-and-parser-20261111`. It was not present in the remote branch list checked on 2026-11-12. Do not replace it with stale remote code or assume the worktree is on GitHub.
 - The user exported the current worktree diff to `C:\Users\lemue\Downloads\hsmp-current-worktree.patch`; SHA-256: `fa19c46f7b5b8d710bbb7c0cb66ae337d0de8b0a7a36ac40329a1ce859c05a25`. The patch itself has not yet been attached in the active conversation, so the exact current local diff is unavailable for direct editing.
