@@ -11,6 +11,8 @@ bash -n "$ROOT/hagonoy"
 printf '[OK] hagonoy\n'
 python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-world-border.py"
 printf '[OK] bin/hagonoy-world-border.py (Python syntax)\n'
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy_chunky_pregen.py"
+printf '[OK] bin/hagonoy_chunky_pregen.py (Python syntax)\n'
 python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-addons.py"
 printf '[OK] bin/hagonoy-addons.py (Python syntax)\n'
 python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding="utf-8"), str(p), "exec")' "$ROOT/bin/hagonoy-generation"
@@ -30,5 +32,6 @@ bash "$ROOT/tests/dual-paper-update-plan-check.sh"
 bash "$ROOT/tests/dual-paper-update-execution-check.sh"
 
 python3 "$ROOT/tests/world-border-sync-check.py"
+python3 "$ROOT/tests/chunky-border-pregen-check.py"
 python3 "$ROOT/tests/maintenance-tools-check.py"
 
