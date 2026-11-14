@@ -347,6 +347,7 @@ def preflight(
     ssh_target: str,
     server_dir: str,
     worlds: dict[str, str],
+    expected_diameters: dict[str, float] | None = None,
 ) -> dict[str, dict[str, object]]:
     check_plugin(console)
     limit = configured_task_radius_limit(host, ssh_target, server_dir)
@@ -357,10 +358,15 @@ def preflight(
             fail(f"Chunky world name '{world}' is assigned to more than one dimension.")
         seen.add(world)
         selection = import_border(console, world)
-        if limit is not None and float(selection["radius_x"]) > limit:
+        radius_to_check = (
+            float(expected_diameters[dimension]) / 2
+            if expected_diameters is not None and dimension in expected_diameters
+            else float(selection["radius_x"])
+        )
+        if limit is not None and radius_to_check > limit:
             fail(
                 f"Chunky's configured radius-limit ({limit:g}) is smaller than the "
-                f"{world} world-border radius ({float(selection['radius_x']):g}); "
+                f"planned {world} world-border radius ({radius_to_check:g}); "
                 "increase the Chunky limit deliberately before applying this border."
             )
         selections[dimension] = selection
@@ -520,24 +526,33 @@ def show_status(
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("Usage: hagonoy_chunky_pregen.py --preflight|--run|--status ...", file=sys.stderr)
+    if len(sys.argv) not in {10, 13}:
+        print("Internal invocation requires host, SSH target, session, server directory, three world names, rate limit, and optionally three planned diameters.", file=sys.stderr)
         return 2
-    mode = sys.argv[1]
-    if len(sys.argv) != 10:
-        print("Internal invocation requires host, SSH target, session, server directory, three world names and rate limit.", file=sys.stderr)
-        return 2
-    _, host, ssh_target, session, server_dir, ow, nether, end, rate = sys.argv
+    mode, host, ssh_target, session, server_dir, ow, nether, end, rate = sys.argv[1:10]
+    expected = None
+    if len(sys.argv) == 13:
+        try:
+            expected = {
+                "overworld": float(sys.argv[10]),
+                "nether": float(sys.argv[11]),
+                "end": float(sys.argv[12]),
+            }
+        except ValueError:
+            print("Invalid planned border diameter supplied for Chunky preflight.", file=sys.stderr)
+            return 2
     worlds = {"overworld": ow, "nether": nether, "end": end}
     try:
         console = Console(host, ssh_target, session)
         if mode == "--preflight":
-            selections = preflight(console, host, ssh_target, server_dir, worlds)
+            selections = preflight(console, host, ssh_target, server_dir, worlds, expected)
             for dimension, selection in selections.items():
                 print(
                     f"{dimension}: world={selection['world']} center=({selection['center_x']}, "
-                    f"{selection['center_z']}) radius={selection['radius_x']}"
+                    f"{selection['center_z']}) current radius={selection['radius_x']}"
                 )
+            if expected is not None:
+                print("Chunky radius-limit preflight also passed for all proposed border diameters.")
         elif mode == "--run":
             if not rate.isdigit() or int(rate) < 0 or int(rate) > 1000:
                 fail("Chunky rate limit must be an integer from 0 through 1000.")
