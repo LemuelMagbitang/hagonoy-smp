@@ -1,6 +1,6 @@
 # HSMP Project Memory Library
 
-Last updated: 2026-11-13 (Asia/Manila)
+Last updated: 2026-11-14 (Asia/Manila)
 
 This folder is the living project notebook for HSMP: current instructions, subsystem procedures, verified history, decisions, test outcomes, and handoffs.
 
@@ -17,8 +17,8 @@ Do not confuse a historical journal entry with current live state. Prefer the la
 ## Documents
 
 - `PROJECT_MEMORY.md` — mission, non-negotiable requirements, canonical paths, current project status, active next step.
-- `CORE_UPDATER_WORKFLOW.md` — Paper/Geyser/Floodgate update scope, central artifact cache, active-host detection/routing, push/pull semantics, current updater blocker and verification sequence.
-- `DATAPACK_WORKFLOW.md` — separate VanillaTweaks datapack registration, planning, deployment, and runtime verification process.
+- `CORE_UPDATER_WORKFLOW.md` — completed Paper/Geyser/Floodgate updater scope, central artifact cache, active-host routing, merged implementation, and live verification record.
+- `DATAPACK_WORKFLOW.md` — separate VanillaTweaks datapack registration, planning, additive deployment, runtime verification, and current repository source-recovery gap.
 - `PROJECT_JOURNAL.md` — chronological log of substantive project conversations, corrections, applied patches, test outcomes, incidents, and decisions.
 - `../docs/RECOVERY-CHECKLIST.md` — recovery reference.
 
