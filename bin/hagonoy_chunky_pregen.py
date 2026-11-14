@@ -295,15 +295,15 @@ def active_task_matches(
 ) -> bool:
     saved_properties, event = task_snapshot(host, ssh_target, server_dir, world)
     saved = task_fingerprint_from_properties(saved_properties)
-    if saved is not None and fingerprint_matches(saved, desired_task):
+    if saved is not None and fingerprint_matches(saved, desired):
         return True
     if (
         event is not None
         and event[0] in {"started", "continued"}
-        and fingerprint_matches(event[1], desired_task)
+        and fingerprint_matches(event[1], desired)
     ):
         return True
-    return event is None and isinstance(state_entry, dict) and fingerprint_matches(state_entry, desired_task)
+    return event is None and isinstance(state_entry, dict) and fingerprint_matches(state_entry, desired)
 
 
 def task_fingerprint_from_properties(values: dict[str, str]) -> dict[str, object] | None:
