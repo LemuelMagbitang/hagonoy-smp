@@ -53,6 +53,17 @@ def test_pause_acknowledgement_patterns() -> None:
     assert module.NO_TASKS_PAUSE_RE.search("No tasks to pause.")
 
 
+def test_only_full_ring_tasks_match() -> None:
+    border = {
+        "center_x": -2349.0, "center_z": 38.0,
+        "radius_x": 10000.0, "radius_z": 10000.0,
+        "shape": "square", "pattern": "ring",
+    }
+    csv_subset = dict(border, pattern="csv", csv="partial.csv")
+    assert module.fingerprint_matches(border, border)
+    assert not module.fingerprint_matches(csv_subset, border)
+
+
 def test_task_properties_preserve_each_world_selection() -> None:
     values = module.properties(
         "world=world_nether\n"
@@ -168,6 +179,7 @@ if __name__ == "__main__":
         test_center_and_radius_output_parsing,
         test_dimension_specific_selection_fingerprints,
         test_border_diameter_verification_accepts_and_rejects,
+        test_only_full_ring_tasks_match,
         test_pause_acknowledgement_patterns,
         test_task_properties_preserve_each_world_selection,
         test_task_log_completion_is_matched_to_geometry,
