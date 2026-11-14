@@ -21,3 +21,11 @@ BEDROCK_PORT="19132"
 READY_PATTERN="Done"
 START_TIMEOUT_SECONDS="900"
 STOP_TIMEOUT_SECONDS="180"
+
+# Chunky border pre-generation (used by ./hagonoy border --apply).
+# These must match the Bukkit world names shown by /worlds or Chunky's world list.
+CHUNKY_OVERWORLD_WORLD="world"
+CHUNKY_NETHER_WORLD="world_nether"
+CHUNKY_END_WORLD="world_the_end"
+# Maximum Chunky chunks/second PER DIMENSION. 1 is conservative; 0 is unlimited.
+CHUNKY_RATE_LIMIT="1"
