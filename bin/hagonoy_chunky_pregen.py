@@ -468,8 +468,26 @@ def sync_world(
     saved = task_fingerprint_from_properties(props)
     worlds_state = state["worlds"]
     assert isinstance(worlds_state, dict)
+    state_entry = worlds_state.get(world)
     active_worlds = progress_worlds(console)
     is_active = world in active_worlds
+
+    if is_active:
+        same_saved = saved is not None and fingerprint_matches(saved, current)
+        same_logged = (
+            event is not None
+            and event[0] in {"started", "continued"}
+            and fingerprint_matches(event[1], current)
+        )
+        same_recent_state = (
+            event is None
+            and isinstance(state_entry, dict)
+            and fingerprint_matches(state_entry, current)
+        )
+        if same_saved or same_logged or same_recent_state:
+            worlds_state[world] = {**current, "status": "running"}
+            save_pregen_state(state)
+            return "already running"
 
     if saved is not None and fingerprint_matches(saved, current):
         is_cancelled = props.get("cancelled", "true").strip().lower() == "true"
@@ -577,12 +595,29 @@ def show_status(
     console = Console(host, ssh_target, session)
     selections = preflight(console, host, ssh_target, server_dir, worlds)
     active_worlds = progress_worlds(console)
+    state = load_pregen_state()
+    worlds_state = state.get("worlds", {})
     print("========== CHUNKY BORDER PRE-GENERATION STATUS ==========")
     for dimension, world in worlds.items():
         props, event = task_snapshot(host, ssh_target, server_dir, world)
         saved = task_fingerprint_from_properties(props)
+        state_entry = worlds_state.get(world) if isinstance(worlds_state, dict) else None
         desired = selections[dimension]
-        if world in active_worlds and saved is not None and fingerprint_matches(saved, desired):
+        same_logged_active = (
+            event is not None
+            and event[0] in {"started", "continued"}
+            and fingerprint_matches(event[1], desired)
+        )
+        same_state_active = (
+            event is None
+            and isinstance(state_entry, dict)
+            and fingerprint_matches(state_entry, desired)
+        )
+        if world in active_worlds and (
+            (saved is not None and fingerprint_matches(saved, desired))
+            or same_logged_active
+            or same_state_active
+        ):
             status = "RUNNING"
         elif saved is not None and fingerprint_matches(saved, desired):
             cancelled = props.get("cancelled", "true").strip().lower() == "true"
