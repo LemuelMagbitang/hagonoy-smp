@@ -502,18 +502,20 @@ def preflight(
             selection = import_border(console, world)
             if verify_diameters and expected_diameters is not None and dimension in expected_diameters:
                 verify_border_diameter(selection, float(expected_diameters[dimension]), world)
-            coverage = chunk_grid_coverage(selection)
-            if coverage["missing_chunks"] > 0:
-                fail(
-                    f"Chunky's chunk-aligned square would omit {coverage['missing_chunks']} "
-                    f"chunks intersecting {world}'s border. Refusing an incomplete pre-generation plan."
-                )
-            selection["chunk_coverage"] = coverage
             radius_to_check = (
                 float(expected_diameters[dimension]) / 2
                 if expected_diameters is not None and dimension in expected_diameters
                 else float(selection["radius_x"])
             )
+            planned_selection = {**selection, "radius_x": radius_to_check, "radius_z": radius_to_check}
+            coverage = chunk_grid_coverage(planned_selection)
+            if coverage["missing_chunks"] > 0:
+                fail(
+                    f"Chunky's chunk-aligned square would omit {coverage['missing_chunks']} "
+                    f"chunks intersecting {world}'s planned border. Refusing an incomplete pre-generation plan."
+                )
+            selection["chunk_coverage"] = coverage
+            selection["planned_radius"] = radius_to_check
             if limit is not None and radius_to_check > limit:
                 fail(
                     f"Chunky's configured radius-limit ({limit:g}) is smaller than the "
@@ -742,7 +744,7 @@ def main() -> int:
                     coverage = selection["chunk_coverage"]
                     print(
                         f"{dimension}: world={selection['world']} center=({selection['center_x']}, "
-                        f"{selection['center_z']}) radius={selection['radius_x']}; "
+                        f"{selection['center_z']}) planned radius={selection['planned_radius']}; "
                         f"Chunky grid={coverage['selected_x']}x{coverage['selected_z']} "
                         f"({coverage['selected_chunks']:,} chunks), "
                         f"border-intersecting={coverage['inside_x']}x{coverage['inside_z']} "
