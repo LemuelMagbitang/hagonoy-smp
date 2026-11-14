@@ -58,3 +58,4 @@ __pycache__/
 
 # Local Chunky border pre-generation fingerprints
 /.hagonoy-world-border-chunky-state.json
+/.hagonoy-world-border-chunky.lock
