@@ -1,8 +1,23 @@
 # HSMP Core Updater and Host-Routing Workflow
 
-Last updated: 2026-11-13 (Asia/Manila)
+Last updated: 2026-11-14 (Asia/Manila)
 
 ## Purpose
+
+## Final completion checkpoint — 2026-11-14
+
+The core updater is complete. PR #4, `Complete dual-host Paper, Geyser, and Floodgate updater`, was merged to `main` on 2026-11-13 (merge commit `c347fa7b54f33a9c7795a45ff1329c80210a1237`).
+
+User-provided live execution/readback on 2026-11-14 confirmed:
+- Paper 26.3 build 249 -> 251 successfully updated using the central `D:\\Hagonoy-SMP\\server-update-downloads` cache.
+- Geyser 2.12.1 and Floodgate 2.2.5 were already current and were left unchanged.
+- The transaction reported `CORE_UPDATE=SUCCESS`, `FINAL_STATE=RUNNING`, `ACTIVE_HOST=ubuntu`, generation 8, generation ID `a4533185-481d-4083-bd1d-5f4a1f229b3c`.
+- The active manifest readback, Paper startup readiness, Floodgate/Geyser enablement, and Java-owned UDP listener on port 19132 were confirmed after startup. Windows remained stopped/inactive.
+
+No further core update is required for the current project phase. The user's latest direction is tool/maintenance-script work only: do not run a live server update, restart, datapack sync/reload, plugin update, backup, or host sync without separate authorization.
+
+Core scope remains Paper plus already-installed Geyser-Spigot and Floodgate. Datapacks and other plugins are managed by separate workflows; no new component is installed and no unrelated plugin, plugin data, world, datapack, configuration, authentication setting, or full backup is changed by this updater.
+
 
 This document is the detailed design record for the HSMP core server-software updater. The objective is to keep the currently authoritative HSMP server healthy while updating only the already-installed managed core components. The updater is a maintenance tool; the live server's verified health is the outcome that matters.
 
@@ -82,7 +97,7 @@ The user's intended direction is:
 - The separate central `server-update-downloads` cache is outside both server directories and must not be deleted, overwritten, or moved by pull/push.
 - Host synchronization must not be triggered automatically by a routine core update.
 
-## Current implementation checkpoint — 2026-11-13
+## Historical implementation checkpoint — 2026-11-13 (superseded)
 
 Source: user-supplied WSL terminal output.
 
@@ -103,7 +118,7 @@ Source: user-supplied WSL terminal output.
 - Latest plan snapshot (refresh before execution): Ubuntu target, Minecraft 26.3, Paper 244 -> 249, Geyser 2.12.1 build 1302, Floodgate already current. The output said Windows staging was excluded; current routing is not host-agnostic and does not meet the user's requirement.
 - GitHub `main` is the documentation record and may lag the user's local WSL checkout. Do not overwrite the WSL checkout from remote main. Do not push manager source changes without explicit approval.
 
-## Current next actions
+## Historical next actions — 2026-11-13 (completed or superseded)
 
 1. Complete the central artifact-cache flow using `D:\\Hagonoy-SMP\\server-update-downloads` / WSL `/mnt/d/Hagonoy-SMP/server-update-downloads`: discover stable releases, download to temporary files, verify, atomically promote, transfer to the selected active host, and verify again remotely.
 2. Complete host-agnostic routing before any live update: confirm exactly one canonical host is running and the other stopped using manifest/generation identity, tmux/process state, Java TCP, Bedrock UDP, and reachability. Fail closed on any ambiguity; never default to Ubuntu.
