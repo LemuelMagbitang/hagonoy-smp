@@ -537,7 +537,7 @@ def sync_world(
                 host, ssh_target, server_dir, world, task_selection, worlds_state.get(world)
             ):
                 fail(f"{world}: Chunky reported another active task whose selection does not match this border.")
-            worlds_state[world] = {**current, "status": "running"}
+            worlds_state[world] = {**task_selection, "status": "running"}
             save_pregen_state(state)
             return "resumed"
 
@@ -565,7 +565,7 @@ def sync_world(
         timeout=10,
     ))
     if ALREADY_ACTIVE_RE.search(output):
-        if not active_task_matches(host, ssh_target, server_dir, world, current, worlds_state.get(world)):
+        if not active_task_matches(host, ssh_target, server_dir, world, task_selection, worlds_state.get(world)):
             fail(f"{world}: Chunky reported an active task whose saved selection does not match this border.")
         worlds_state[world] = {**current, "status": "running"}
         save_pregen_state(state)
@@ -662,7 +662,7 @@ def show_status(
                 status = "CANCELLED"
             else:
                 status = "NOT RUNNING / VERIFY TASK LOG"
-        elif event is not None and event[0] == "completed" and fingerprint_matches(event[1], desired):
+        elif event is not None and event[0] == "completed" and fingerprint_matches(event[1], desired_task):
             status = "COMPLETE (task file unavailable)"
         else:
             status = "NOT STARTED FOR CURRENT BORDER"
