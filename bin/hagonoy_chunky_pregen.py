@@ -421,6 +421,17 @@ def preflight(
                 fail(f"Chunky world name '{world}' is assigned to more than one dimension.")
             seen.add(world)
             selection = import_border(console, world)
+            if (
+                expected_diameters is not None
+                and dimension in expected_diameters
+                and abs(float(selection["radius_x"]) * 2 - float(expected_diameters[dimension])) > 0.01
+            ):
+                fail(
+                    f"Chunky's imported {world} border diameter "
+                    f"({float(selection['radius_x']) * 2:g}) does not match "
+                    f"Hagonoy's planned diameter ({float(expected_diameters[dimension]):g}). "
+                    "No world border was changed."
+                )
             radius_to_check = (
                 float(expected_diameters[dimension]) / 2
                 if expected_diameters is not None and dimension in expected_diameters
