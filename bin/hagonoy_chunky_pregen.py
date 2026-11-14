@@ -409,6 +409,7 @@ def preflight(
     server_dir: str,
     worlds: dict[str, str],
     expected_diameters: dict[str, float] | None = None,
+    verify_diameters: bool = False,
 ) -> dict[str, dict[str, object]]:
     check_plugin(console)
     saved_selection = snapshot_selection(console)
@@ -422,15 +423,15 @@ def preflight(
             seen.add(world)
             selection = import_border(console, world)
             if (
-                expected_diameters is not None
+                verify_diameters
+                and expected_diameters is not None
                 and dimension in expected_diameters
                 and abs(float(selection["radius_x"]) * 2 - float(expected_diameters[dimension])) > 0.01
             ):
                 fail(
                     f"Chunky's imported {world} border diameter "
                     f"({float(selection['radius_x']) * 2:g}) does not match "
-                    f"Hagonoy's planned diameter ({float(expected_diameters[dimension]):g}). "
-                    "No world border was changed."
+                    f"the applied diameter ({float(expected_diameters[dimension]):g})."
                 )
             radius_to_check = (
                 float(expected_diameters[dimension]) / 2
@@ -560,9 +561,10 @@ def run_pregen(
     server_dir: str,
     worlds: dict[str, str],
     rate_limit: int,
+    expected_diameters: dict[str, float] | None = None,
 ) -> None:
     console = Console(host, ssh_target, session)
-    selections = preflight(console, host, ssh_target, server_dir, worlds)
+    selections = preflight(console, host, ssh_target, server_dir, worlds, expected_diameters, True)
     saved_selection = snapshot_selection(console)
     state = load_pregen_state()
     print("========== CHUNKY BORDER PRE-GENERATION ==========")
@@ -671,7 +673,7 @@ def main() -> int:
         elif mode == "--run":
             if not rate.isdigit() or int(rate) < 0 or int(rate) > 1000:
                 fail("Chunky rate limit must be an integer from 0 through 1000.")
-            run_pregen(host, ssh_target, session, server_dir, worlds, int(rate))
+            run_pregen(host, ssh_target, session, server_dir, worlds, int(rate), expected)
         elif mode == "--status":
             show_status(host, ssh_target, session, server_dir, worlds)
         else:
