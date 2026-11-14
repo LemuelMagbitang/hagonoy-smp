@@ -567,7 +567,7 @@ def sync_world(
     if ALREADY_ACTIVE_RE.search(output):
         if not active_task_matches(host, ssh_target, server_dir, world, task_selection, worlds_state.get(world)):
             fail(f"{world}: Chunky reported an active task whose saved selection does not match this border.")
-        worlds_state[world] = {**current, "status": "running"}
+        worlds_state[world] = {**task_selection, "status": "running"}
         save_pregen_state(state)
         return "already running"
     if START_CONFIRM_RE.search(output):
@@ -579,7 +579,7 @@ def sync_world(
         ))
     if not STARTED_RE.search(output):
         fail(f"{world}: Chunky did not confirm that a new generation task started.")
-    worlds_state[world] = {**current, "status": "running"}
+    worlds_state[world] = {**task_selection, "status": "running"}
     save_pregen_state(state)
     return "started"
 
