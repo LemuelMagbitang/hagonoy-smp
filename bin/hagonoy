@@ -962,8 +962,8 @@ case "$command" in
         ;;
     border)
         shift
-        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" ) ]] ||
-            die "Usage: ./hagonoy border --plan|--apply"
+        [[ $# -eq 1 && ( "$1" == "--plan" || "$1" == "--apply" || "$1" == "--chunks-status" ) ]] ||
+            die "Usage: ./hagonoy border --plan|--apply|--chunks-status"
         exec python3 "$PROJECT_DIR/bin/hagonoy-world-border.py" "$1"
         ;;
     addons)
