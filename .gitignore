@@ -55,3 +55,6 @@ __pycache__/
 
 # Local runtime state for bidirectional world-border synchronization
 /.hagonoy-world-border-state.json
+
+# Local Chunky border pre-generation fingerprints
+/.hagonoy-world-border-chunky-state.json
