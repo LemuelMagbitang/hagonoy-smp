@@ -65,6 +65,64 @@ def config_values() -> tuple[str, str, str, str]:
     return tuple(values)  # type: ignore[return-value]
 
 
+def chunky_settings() -> dict[str, str]:
+    if not CONFIG.is_file():
+        fail(f"Missing coordinator configuration: {CONFIG}")
+    code = (
+        'source "$1" || exit 1; '
+        'printf "%s\\0" "$WINDOWS_SERVER_DIR" "$UBUNTU_SERVER_DIR" '
+        '"${CHUNKY_OVERWORLD_WORLD:-world}" '
+        '"${CHUNKY_NETHER_WORLD:-world_nether}" '
+        '"${CHUNKY_END_WORLD:-world_the_end}" '
+        '"${CHUNKY_RATE_LIMIT:-1}"'
+    )
+    output = run(["bash", "-c", code, "bash", str(CONFIG)])
+    values = output.rstrip("\0").split("\0")
+    if len(values) != 6 or any(not value for value in values):
+        fail("Dual-host configuration is missing the server directories required by Chunky pre-generation.")
+    for name in values[2:5]:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+            fail(f"Unsafe/unsupported Chunky Bukkit world name in config: {name!r}")
+    if not values[5].isdigit() or int(values[5]) < 0 or int(values[5]) > 1000:
+        fail("CHUNKY_RATE_LIMIT must be an integer from 0 through 1000.")
+    return {
+        "windows_server_dir": values[0],
+        "ubuntu_server_dir": values[1],
+        "overworld": values[2],
+        "nether": values[3],
+        "end": values[4],
+        "rate_limit": values[5],
+    }
+
+
+def run_chunky_helper(
+    mode: str,
+    host: str,
+    target: str,
+    session: str,
+    server_dir: str,
+    settings: dict[str, str],
+) -> None:
+    helper = ROOT / "bin" / "hagonoy_chunky_pregen.py"
+    if not helper.is_file():
+        fail(f"Missing Chunky pre-generation helper: {helper}")
+    args = [
+        sys.executable, str(helper), mode, host, target, session, server_dir,
+        settings["overworld"], settings["nether"], settings["end"], settings["rate_limit"],
+    ]
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=240, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail(f"Chunky pre-generation helper could not complete: {exc}")
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        fail(f"Chunky pre-generation did not complete successfully: {detail or result.returncode}")
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+
+
 def tmux_pane_target(session: str) -> str:
     return f"={session}:"
 
@@ -319,10 +377,11 @@ def apply_targets(
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"--plan", "--apply"}:
-        fail("Usage: ./hagonoy border --plan|--apply")
+    if len(sys.argv) != 2 or sys.argv[1] not in {"--plan", "--apply", "--chunks-status"}:
+        fail("Usage: ./hagonoy border --plan|--apply|--chunks-status")
 
     windows_session, ubuntu_target, ubuntu_session, port = config_values()
+    chunky = chunky_settings()
     win = windows_state(windows_session, port)
     ubu = ubuntu_state(ubuntu_target, ubuntu_session, port)
     print(f"Windows canonical: {win}")
@@ -339,6 +398,11 @@ def main() -> None:
     else:
         host, target, session = "WINDOWS", "", windows_session
 
+    server_dir = chunky["windows_server_dir"] if host == "WINDOWS" else chunky["ubuntu_server_dir"]
+    if sys.argv[1] == "--chunks-status":
+        run_chunky_helper("--status", host, target, session, server_dir, chunky)
+        return
+
     current = {
         dimension: query_width(host, target, session, dimension)
         for dimension in DIMENSIONS
@@ -347,9 +411,15 @@ def main() -> None:
     targets, explanation, initializing = calculate_targets(pair, load_state())
     display_plan(pair, targets, current[END], explanation, initializing)
 
+    print()
+    print("Chunky will import the live center/radius and pre-generate the square selection independently for all three configured worlds.")
+    print(f"Chunky rate limit: {chunky['rate_limit']} chunks/second per world (0 = unlimited).")
+
     if sys.argv[1] == "--plan":
         print("[hagonoy] PLAN ONLY. No world-border settings or synchronization state were changed.")
         return
+
+    run_chunky_helper("--preflight", host, target, session, server_dir, chunky)
 
     shrink = any(targets[d] < pair[d] - 0.01 for d in (OVERWORLD, NETHER))
     phrase = (
@@ -367,6 +437,7 @@ def main() -> None:
         print("[hagonoy] Cancelled. No world-border settings or synchronization state were changed.")
         return
     apply_targets(host, target, session, pair, targets, current[END])
+    run_chunky_helper("--run", host, target, session, server_dir, chunky)
 
 
 if __name__ == "__main__":
