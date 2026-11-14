@@ -1,12 +1,12 @@
 # HSMP Datapack / Addons Workflow Memory
 
-Last updated: 2026-11-13 (Asia/Manila)
+Last updated: 2026-11-14 (Asia/Manila)
 
 ## Purpose and authority
 
 This document records the intended design and the inspected implementation of HSMP's custom datapack management tools. It is a continuity aid. The user's latest explicit instructions are authoritative; neither this document nor older code may override them.
 
-Historical note: on 2026-11-12 the active direction temporarily shifted to addons/datapack tools. That priority has since been superseded. As of 2026-11-13 the active workstream is the core Paper/Geyser/Floodgate updater; consult memory/PROJECT_MEMORY.md for current priority. This datapack document remains the detailed reference for the separate datapack subsystem.
+Current note (2026-11-14): the core Paper/Geyser/Floodgate updater is complete. The active tooling phase has returned to the separate datapack/add-on managers. The live 13-pack deployment is already verified; current work is restoring the tested manager source to the repository and then completing a distinct installed-plugin updater. Consult memory/PROJECT_MEMORY.md for current priority.
 
 The server's major migration to Minecraft 26.3 / Paper 26.3 is already complete. This work is about safely maintaining custom world datapacks, not repeating the migration.
 
@@ -203,16 +203,30 @@ These are offline fixture tests. The output's registration test used a synthetic
 
 Next safe sequence is to inspect the real manifest with `./hagonoy addons list`, then run the read-only `./hagonoy addons plan --host <actual-authoritative-host>`. Determine the actual host from live host/generation status; do not assume the historical Ubuntu runtime is still current. Review every `PRESENT`, `ADD`, and `CONFLICT` before any sync. `addons sync` remains a separate user-authorized mutation.
 
-## Remaining work
+## Current tooling status and remaining work — 2026-11-14
 
-1. Apply/reconcile the follow-up against the exact WSL checkout; preserve the user's actual approval manifest.
-2. Inspect the resulting `bin/hagonoy`, Ubuntu lifecycle, Windows lifecycle, and legacy inventory routing; verify no automatic datapack hooks remain.
-3. Run Python compilation, datapack fixture tests, shell syntax checks, and focused static checks on those hooks.
-4. Inspect the real 13-pack approval manifest and corresponding source ZIPs on the user's machine; confirm filenames, bytes, SHA-256 values, and 26.3 compatibility without changing or deploying anything.
-5. Run `addons plan` against the selected canonical host and review every `PRESENT`, `ADD`, and `CONFLICT`.
-6. Only after the user explicitly requests a deployment, run the standalone `addons sync` against the selected host. Verify on-disk hashes and, if running, reload completion and `/datapack list enabled`.
-7. After the datapack workflow is complete, resume the broader maintenance work and later review host switching/backup tools.
+The live deployment is complete: all 13 custom VanillaTweaks packs were confirmed enabled on Ubuntu on 2026-11-12 (see the runtime verification section above). Do not repeat sync/reload as part of tool development.
 
+Current repository integration gap:
+- GitHub `main`'s `bin/hagonoy` dispatcher routes `addons` to `bin/hagonoy-datapacks.py`, but the manager, remote helper, and fixture test are absent from `main`.
+- The legacy `bin/hagonoy-addons.py` is a read-only broad inventory tool; it is not the additive datapack manager and not a plugin updater.
+- The most recent hardened datapack manager implementation was recovered from the project Library. Exact verified source hashes:
+  - `bin/hagonoy-datapacks.py`: `1ebc2a13aab514e134b6469911961f5d584c60e745a205ae579f575d74d6a70d`
+  - `bin/hagonoy-datapacks-remote.py`: `c2e340e15076a16de917372f913f3a1f236adcf5601ec1d6ebbd8d39544ca738`
+  - `tests/datapack-deploy-check.py`: `b1819761e4c0964ede6cc7663275d175868a0272973d8ae270e26747e83b8a13`
+- Python compilation and the complete offline datapack regression suite passed after recovery. A guarded installer package was also tested against a temporary repository, including idempotent re-run and preservation of an existing `config/approved-datapacks.json` sentinel.
+- Recovery package SHA-256: `d16709f531289c40f844f8526647babf149296cdf2cbd5ad4c70f804e45553e5`. It installs only the three source/test files and adds their compile/test commands to `tests/syntax-check.sh`; it never reads or writes the approval manifest.
+- This recovery package has not yet been applied to the user's WSL checkout or published as repository source. Reconcile the current local worktree against the expected hashes before applying or committing anything.
+
+Next sequence:
+1. Verify/reconcile the recovered manager against the exact WSL working tree; preserve the real 13-pack manifest byte-for-byte.
+2. Run Python compilation, `tests/datapack-deploy-check.py`, `bash -n tests/syntax-check.sh`, and `git diff --check`; verify the normal test runner invokes the datapack tests.
+3. Review the precise source diff and publish the manager as a separate source-code change only after explicit approval. Do not combine it with border PRs or the core updater.
+4. Then build the distinct installed-Paper-plugin updater. It must update only explicitly managed, already-installed plugins; core-managed Paper/Geyser/Floodgate remain excluded. No auto-install, removal, configuration/data migration, or live operation.
+5. Keep actual Forge/Fabric mods out of Paper plugin management; supporting them requires a separate, approved mod-loader/server-platform decision.
+
+No live sync, reload, backup, or world/server file change is part of the above tooling work.
+ 
 ## Continuity discipline
 
 Update this document when a user decision changes, when a code defect is verified/fixed, or when a test or live operation establishes new state. Label observations by source and date. Never store credentials, tokens, private keys, or other secrets. Never claim a live datapack was installed or enabled based on offline fixture tests.
@@ -410,3 +424,15 @@ Next required review: inspect the exact local diff for `bin/hagonoy-datapacks-re
 - Datapack deployment is not the active workstream in the 2026-11-13 checkpoint. The core updater is active; do not resume datapack changes unless the user directs it or the updater phase is completed and the user approves the next phase.
 - The 13 approved VanillaTweaks packs were confirmed enabled on the Ubuntu live world in the 2026-11-12 record above. Do not repeat sync/reload merely to test the core updater.
 - User's designated update-artifact cache remains D:\\Hagonoy-SMP\\server-update-downloads; WSL path /mnt/d/Hagonoy-SMP/server-update-downloads. A user-mentioned intention to delete a duplicate VanillaTweaks archive in favor of the original website bundle was not confirmed as completed. Do not claim deletion or touch those source files without explicit direction.
+
+
+## Source recovery and dispatcher integration checkpoint — 2026-11-14
+
+Source: current GitHub `main` inspection plus independently rerun offline tests in the assistant's temporary workspace.
+
+- Verified that `bin/hagonoy` already routes the standalone `addons` command to `bin/hagonoy-datapacks.py`. The target manager and remote helper, as well as `tests/datapack-deploy-check.py`, are missing from current `main`; the command therefore has a broken target until source integration is completed.
+- Verified that `bin/hagonoy-dual-lifecycle` and `bin/hagonoy-dual-windows-lifecycle` contain no automatic datapack sync hooks. Keep this separation.
+- Recovered the hardened manager, remote helper, and regression test from the project Library. SHA-256 values are recorded above. Re-ran `sha256sum -c`, Python compilation, and the complete offline fixture suite: all passed, including slow reload handling, exact enabled-ID readback, no-overwrite publication, malformed metadata, path/symlink validation, staging ownership, and rollback-on-manifest-save-failure scenarios.
+- Prepared `hsmp-datapack-manager-recovery.zip`; its guarded installer was tested against a disposable fixture repository. It installs only the three source/test files, integrates their tests into `tests/syntax-check.sh`, is idempotent, and preserves a sentinel approval manifest unchanged.
+- The package was not applied to the user's WSL checkout, no repository source commit/push was made, and no live server/world/plugin/datapack/backup operation occurred.
+- Preserve the actual local 13-entry `config/approved-datapacks.json`; it is intentionally omitted from the recovery package. The 13 packs remain previously confirmed enabled in Ubuntu; no redeployment is needed.
