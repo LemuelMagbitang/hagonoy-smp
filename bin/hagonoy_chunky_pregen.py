@@ -518,7 +518,7 @@ def sync_world(
         is_cancelled = props.get("cancelled", "true").strip().lower() == "true"
         if not is_cancelled:
             if is_active:
-                worlds_state[world] = {**current, "status": "running"}
+                worlds_state[world] = {**task_selection, "status": "running"}
                 save_pregen_state(state)
                 return "already running"
             # Resume this world's exact saved border selection. No task is duplicated:
@@ -534,7 +534,7 @@ def sync_world(
             if re.search(r"No tasks to continue\.", output, re.IGNORECASE):
                 fail(f"{world}: Chunky had an incomplete saved task but refused to continue it.")
             if ALREADY_ACTIVE_RE.search(output) and not active_task_matches(
-                host, ssh_target, server_dir, world, current, worlds_state.get(world)
+                host, ssh_target, server_dir, world, task_selection, worlds_state.get(world)
             ):
                 fail(f"{world}: Chunky reported another active task whose selection does not match this border.")
             worlds_state[world] = {**current, "status": "running"}
@@ -644,19 +644,19 @@ def show_status(
         same_state_active = (
             event is None
             and isinstance(state_entry, dict)
-            and fingerprint_matches(state_entry, desired)
+            and fingerprint_matches(state_entry, desired_task)
         )
         if world in active_worlds and (
-            (saved is not None and fingerprint_matches(saved, desired))
+            (saved is not None and fingerprint_matches(saved, desired_task))
             or same_logged_active
             or same_state_active
         ):
             status = "RUNNING"
-        elif saved is not None and fingerprint_matches(saved, desired):
+        elif saved is not None and fingerprint_matches(saved, desired_task):
             cancelled = props.get("cancelled", "true").strip().lower() == "true"
             if not cancelled and event is not None and event[0] == "paused":
                 status = "PAUSED (resumable)"
-            elif cancelled and event is not None and event[0] == "completed" and fingerprint_matches(event[1], desired):
+            elif cancelled and event is not None and event[0] == "completed" and fingerprint_matches(event[1], desired_task):
                 status = "COMPLETE"
             elif cancelled and event is not None and event[0] == "cancelled":
                 status = "CANCELLED"
