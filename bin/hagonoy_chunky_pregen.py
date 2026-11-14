@@ -51,6 +51,8 @@ LIMIT_RE = re.compile(r"Rate limit for .* set to .* chunks per second\.", re.IGN
 NO_TASKS_RE = re.compile(r"No tasks to cancel\.", re.IGNORECASE)
 CANCEL_PROMPT_RE = re.compile(r"Cancelled tasks cannot be continued", re.IGNORECASE)
 CANCELLED_RE = re.compile(r"Task cancelled for ", re.IGNORECASE)
+PAUSED_RE = re.compile(r"Task paused for ", re.IGNORECASE)
+NO_TASKS_PAUSE_RE = re.compile(r"No tasks to pause\\.", re.IGNORECASE)
 PROGRESS_RE = re.compile(r"Task running for (.+?)\. Processed:", re.IGNORECASE)
 NO_PROGRESS_RE = re.compile(r"No tasks running\.", re.IGNORECASE)
 TASK_LOG_RE = re.compile(r"^\[[^\]]+\]\s+(\w+)\s+(.*)$")
@@ -363,29 +365,28 @@ def set_square_and_limit(console: Console, rate_limit: int) -> None:
     )
 
 
-def cancel_world_task(console: Console, world: str) -> None:
+def pause_world_task(console: Console, host: str, ssh_target: str, server_dir: str, world: str) -> None:
     output = clean_text(console.command(
-        f"chunky cancel {world}",
-        any_of=(NO_TASKS_RE, CANCEL_PROMPT_RE),
+        f"chunky pause {world}",
+        any_of=(PAUSED_RE, NO_TASKS_PAUSE_RE),
         timeout=8,
     ))
-    if CANCEL_PROMPT_RE.search(output):
-        output = clean_text(console.command(
-            "chunky confirm",
-            required=(CANCELLED_RE,),
-            timeout=12,
-        ))
-    # Allow Chunky's worker to finish in-flight chunk futures and remove its task.
-    deadline = time.monotonic() + 20
+    if NO_TASKS_PAUSE_RE.search(output):
+        # A saved but inactive task needs no pause; Chunky will ask for explicit
+        # confirmation before the replacement selection overwrites it.
+        return
+
+    deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
-        try:
-            active = progress_worlds(console)
-        except RuntimeError:
-            active = set()
-        if world not in active:
+        props, event = task_snapshot(host, ssh_target, server_dir, world)
+        active = world in progress_worlds(console)
+        if not active and event is not None and event[0] == "paused":
+            # GenerationTask schedules bounded asynchronous chunk loads. Give
+            # already-dispatched I/O a grace window to finish before replacement.
+            time.sleep(8)
             return
         time.sleep(1)
-    fail(f"Chunky task for {world} did not stop after cancellation; refusing to start a replacement.")
+    fail(f"Chunky task for {world} did not reach its paused state; refusing to start a replacement.")
 
 
 def configured_task_radius_limit(
@@ -529,7 +530,7 @@ def sync_world(
         return "already complete"
 
     if is_active or (saved is not None and props.get("cancelled", "true").strip().lower() == "false"):
-        cancel_world_task(console, world)
+        pause_world_task(console, host, ssh_target, server_dir, world)
 
     set_square_and_limit(console, rate_limit)
     output = clean_text(console.command(
