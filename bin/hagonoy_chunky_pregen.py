@@ -23,6 +23,23 @@ CENTER_RE = re.compile(
 )
 RADIUS_RE = re.compile(r"Radius changed to\s+(-?(?:\d+(?:\.\d+)?|\.\d+))\.", re.IGNORECASE)
 WORLD_MISSING_RE = re.compile(r"World .* not found\. Available worlds:", re.IGNORECASE)
+WORLD_CHANGED_RE = re.compile(r"World changed to ", re.IGNORECASE)
+SELECTION_WORLD_RE = re.compile(r"World:\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+SELECTION_SHAPE_RE = re.compile(r"Shape:\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+SELECTION_CENTER_RE = re.compile(
+    r"Center:\s*(-?(?:\d+(?:\.\d+)?|\.\d+)),\s*(-?(?:\d+(?:\.\d+)?|\.\d+))",
+    re.IGNORECASE,
+)
+SELECTION_RADIUS_RE = re.compile(
+    r"Radius:\s*(-?(?:\d+(?:\.\d+)?|\.\d+))",
+    re.IGNORECASE,
+)
+SELECTION_RADII_RE = re.compile(
+    r"Radii:\s*(-?(?:\d+(?:\.\d+)?|\.\d+)),\s*(-?(?:\d+(?:\.\d+)?|\.\d+))",
+    re.IGNORECASE,
+)
+RADIUS_CHANGED_RE = re.compile(r"Radius changed to ", re.IGNORECASE)
+RADII_CHANGED_RE = re.compile(r"Radii changed to ", re.IGNORECASE)
 STARTED_RE = re.compile(r"Task started in ", re.IGNORECASE)
 START_CONFIRM_RE = re.compile(r"A task was already started for this world", re.IGNORECASE)
 ALREADY_ACTIVE_RE = re.compile(r"Task already started for ", re.IGNORECASE)
@@ -153,6 +170,50 @@ def import_border(console: Console, world: str) -> dict[str, float | str]:
     if not all(math.isfinite(v) for v in (x, z, radius)) or radius <= 0:
         fail(f"Invalid world-border selection returned by Chunky for {world}: {centers[-1]}, {radii[-1]}")
     return {"world": world, "center_x": x, "center_z": z, "radius_x": radius, "radius_z": radius, "shape": "square"}
+
+
+def snapshot_selection(console: Console) -> dict[str, object]:
+    output = clean_text(console.command(
+        "chunky selection",
+        required=(SELECTION_WORLD_RE, SELECTION_SHAPE_RE, SELECTION_CENTER_RE),
+        any_of=(SELECTION_RADIUS_RE, SELECTION_RADII_RE),
+        timeout=8,
+    ))
+    worlds = SELECTION_WORLD_RE.findall(output)
+    shapes = SELECTION_SHAPE_RE.findall(output)
+    centers = SELECTION_CENTER_RE.findall(output)
+    radii = SELECTION_RADIUS_RE.findall(output)
+    radii_pair = SELECTION_RADII_RE.findall(output)
+    if not worlds or not shapes or not centers or (not radii and not radii_pair):
+        fail("Could not snapshot the user's current Chunky selection before border pre-generation.")
+    if radii_pair:
+        rx, rz = map(float, radii_pair[-1])
+    else:
+        rx = rz = float(radii[-1])
+    return {
+        "world": worlds[-1],
+        "shape": shapes[-1].lower(),
+        "center_x": float(centers[-1][0]),
+        "center_z": float(centers[-1][1]),
+        "radius_x": rx,
+        "radius_z": rz,
+    }
+
+
+def restore_selection(console: Console, saved: dict[str, object]) -> None:
+    world = str(saved["world"])
+    shape = str(saved["shape"])
+    cx = float(saved["center_x"])
+    cz = float(saved["center_z"])
+    rx = float(saved["radius_x"])
+    rz = float(saved["radius_z"])
+    console.command(f"chunky world {world}", required=(WORLD_CHANGED_RE,), timeout=8)
+    console.command(f"chunky center {cx:.12g} {cz:.12g}", required=(CENTER_RE,), timeout=8)
+    if abs(rx - rz) <= 0.001:
+        console.command(f"chunky radius {rx:.12g}", any_of=(RADIUS_CHANGED_RE, RADII_CHANGED_RE), timeout=8)
+    else:
+        console.command(f"chunky radius {rx:.12g} {rz:.12g}", required=(RADII_CHANGED_RE,), timeout=8)
+    console.command(f"chunky shape {shape}", required=(SHAPE_RE,), timeout=8)
 
 
 def read_server_text(host: str, ssh_target: str, server_dir: str, relative: str, *, tail: int | None = None) -> str:
@@ -350,26 +411,30 @@ def preflight(
     expected_diameters: dict[str, float] | None = None,
 ) -> dict[str, dict[str, object]]:
     check_plugin(console)
+    saved_selection = snapshot_selection(console)
     limit = configured_task_radius_limit(host, ssh_target, server_dir)
     selections: dict[str, dict[str, object]] = {}
     seen = set()
-    for dimension, world in worlds.items():
-        if world in seen:
-            fail(f"Chunky world name '{world}' is assigned to more than one dimension.")
-        seen.add(world)
-        selection = import_border(console, world)
-        radius_to_check = (
-            float(expected_diameters[dimension]) / 2
-            if expected_diameters is not None and dimension in expected_diameters
-            else float(selection["radius_x"])
-        )
-        if limit is not None and radius_to_check > limit:
-            fail(
-                f"Chunky's configured radius-limit ({limit:g}) is smaller than the "
-                f"planned {world} world-border radius ({radius_to_check:g}); "
-                "increase the Chunky limit deliberately before applying this border."
+    try:
+        for dimension, world in worlds.items():
+            if world in seen:
+                fail(f"Chunky world name '{world}' is assigned to more than one dimension.")
+            seen.add(world)
+            selection = import_border(console, world)
+            radius_to_check = (
+                float(expected_diameters[dimension]) / 2
+                if expected_diameters is not None and dimension in expected_diameters
+                else float(selection["radius_x"])
             )
-        selections[dimension] = selection
+            if limit is not None and radius_to_check > limit:
+                fail(
+                    f"Chunky's configured radius-limit ({limit:g}) is smaller than the "
+                    f"planned {world} world-border radius ({radius_to_check:g}); "
+                    "increase the Chunky limit deliberately before applying this border."
+                )
+            selections[dimension] = selection
+    finally:
+        restore_selection(console, saved_selection)
     return selections
 
 
@@ -469,21 +534,25 @@ def run_pregen(
 ) -> None:
     console = Console(host, ssh_target, session)
     selections = preflight(console, host, ssh_target, server_dir, worlds)
+    saved_selection = snapshot_selection(console)
     state = load_pregen_state()
     print("========== CHUNKY BORDER PRE-GENERATION ==========")
     print("Selection shape: square. Centers and radii are imported from each live Bukkit world border.")
-    print(f"Per-world rate limit: {rate_limit} chunks/second (0 means unlimited).")
+    print(f"Per-world rate limit for new/resumed tasks: {rate_limit} chunks/second (0 means unlimited).")
     for dimension, world in worlds.items():
         print(
             f"{dimension} -> {world}: center X {selections[dimension]['center_x']:g}, "
             f"Z {selections[dimension]['center_z']:g}; radius {selections[dimension]['radius_x']:g}"
         )
-    for dimension, world in worlds.items():
-        outcome = sync_world(
-            console, host, ssh_target, server_dir, world,
-            selections[dimension], rate_limit, state,
-        )
-        print(f"[hagonoy] {dimension} ({world}): {outcome}.")
+    try:
+        for dimension, world in worlds.items():
+            outcome = sync_world(
+                console, host, ssh_target, server_dir, world,
+                selections[dimension], rate_limit, state,
+            )
+            print(f"[hagonoy] {dimension} ({world}): {outcome}.")
+    finally:
+        restore_selection(console, saved_selection)
     print("[hagonoy] Chunky tasks were started/resumed per dimension; completion is checked with --chunks-status.")
 
 
