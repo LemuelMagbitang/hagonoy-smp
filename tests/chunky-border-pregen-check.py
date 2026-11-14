@@ -37,6 +37,32 @@ def test_dimension_specific_selection_fingerprints() -> None:
     assert not module.fingerprint_matches(overworld, end)
 
 
+def test_chunk_grid_coverage_for_confirmed_dimension_geometry() -> None:
+    overworld = module.chunk_grid_coverage({
+        "center_x": -2349.0, "center_z": 38.0,
+        "radius_x": 10000.0, "radius_z": 10000.0,
+    })
+    assert overworld["selected_x"] == 1251 and overworld["selected_z"] == 1251
+    assert overworld["inside_x"] == 1251 and overworld["inside_z"] == 1251
+    assert overworld["extra_chunks"] == 0 and overworld["missing_chunks"] == 0
+
+    nether = module.chunk_grid_coverage({
+        "center_x": -293.0, "center_z": 4.0,
+        "radius_x": 1250.0, "radius_z": 1250.0,
+    })
+    assert nether["selected_x"] == 159 and nether["selected_z"] == 159
+    assert nether["inside_x"] == 157 and nether["inside_z"] == 157
+    assert nether["extra_chunks"] == 632 and nether["missing_chunks"] == 0
+
+    end = module.chunk_grid_coverage({
+        "center_x": 0.0, "center_z": 0.0,
+        "radius_x": 10000.0, "radius_z": 10000.0,
+    })
+    assert end["selected_x"] == 1251 and end["selected_z"] == 1251
+    assert end["inside_x"] == 1250 and end["inside_z"] == 1250
+    assert end["extra_chunks"] == 2501 and end["missing_chunks"] == 0
+
+
 def test_border_diameter_verification_accepts_and_rejects() -> None:
     selection = {"radius_x": 1250.0}
     module.verify_border_diameter(selection, 2500.0, "world_nether")
@@ -177,6 +203,7 @@ def test_only_square_chunky_selection_is_accepted() -> None:
 if __name__ == "__main__":
     for test in (
         test_center_and_radius_output_parsing,
+        test_chunk_grid_coverage_for_confirmed_dimension_geometry,
         test_dimension_specific_selection_fingerprints,
         test_border_diameter_verification_accepts_and_rejects,
         test_only_full_ring_tasks_match,
