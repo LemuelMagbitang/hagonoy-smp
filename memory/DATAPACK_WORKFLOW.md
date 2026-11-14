@@ -215,7 +215,7 @@ Current repository integration gap:
   - `bin/hagonoy-datapacks-remote.py`: `c2e340e15076a16de917372f913f3a1f236adcf5601ec1d6ebbd8d39544ca738`
   - `tests/datapack-deploy-check.py`: `b1819761e4c0964ede6cc7663275d175868a0272973d8ae270e26747e83b8a13`
 - Python compilation and the complete offline datapack regression suite passed after recovery. A guarded installer package was also tested against a temporary repository, including idempotent re-run and preservation of an existing `config/approved-datapacks.json` sentinel.
-- Recovery package SHA-256: `d16709f531289c40f844f8526647babf149296cdf2cbd5ad4c70f804e45553e5`. It installs only the three source/test files and adds their compile/test commands to `tests/syntax-check.sh`; it never reads or writes the approval manifest.
+- Recovery package SHA-256: `3a4a034b59fb2ec9e0d66bad0dd20cdcff8b5506a232b7e14e818ca645760f9e`. It installs only the three source/test files and adds their compile/test commands to `tests/syntax-check.sh`; it never reads or writes the approval manifest.
 - This recovery package has not yet been applied to the user's WSL checkout or published as repository source. Reconcile the current local worktree against the expected hashes before applying or committing anything.
 
 Next sequence:
