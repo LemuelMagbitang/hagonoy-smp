@@ -324,3 +324,32 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
 - Opened PR #4 against main and marked it ready for review after the checks passed: https://github.com/LemuelMagbitang/hagonoy-smp/pull/4. Final branch compare: 17 commits ahead, 0 behind; GitHub reported conflict-free/mergeable. PR #2 remains separate.
 - PR checks passed at head `ec0172d9e82824b9a318c63295c0ca7017c7658b`: manager checks run `43318480670` and shell tests run `43318480563`. The shell workflow passed restore safeguards, Playit detection, core API/plan/cache/lineage/Windows-route/transaction tests, and Paper updater/rollback tests.
 - No live plan/update, server stop/start, backup, cache cleanup, plugin/datapack/world/config modification, or host sync was performed. Next: review PR #4; merge only with explicit approval; then fresh read-only plan and separate explicit approval for any live update.
+
+
+## 2026-11-14 — Core updater completion and datapack manager source recovery
+
+### User direction
+- User confirmed the Paper/Spigot, Geyser, and Floodgate updater is complete and directed the work to continue on the separate add-on/plugin/mod maintenance tools.
+- User's current boundary is explicit: no server updates or changes are needed; continue fixing tools and maintenance scripts only. No live datapack/plugin sync, reload, server stop/start, backup, or host sync is authorized by this direction.
+
+### Core updater completion
+- PR #4 was merged to `main` on 2026-11-13 (merge commit `c347fa7b54f33a9c7795a45ff1329c80210a1237`).
+- User-supplied 2026-11-14 execution output reported successful Paper 26.3 build 249 -> 251 update using the central `D:\\Hagonoy-SMP\\server-update-downloads` cache; already-current Geyser 2.12.1 and Floodgate 2.2.5 were left unchanged.
+- Execution reported `CORE_UPDATE=SUCCESS`, `FINAL_STATE=RUNNING`, `ACTIVE_HOST=ubuntu`, generation 8, ID `a4533185-481d-4083-bd1d-5f4a1f229b3c`. Subsequent user-supplied manifest/log/socket readback confirmed Paper build 251 startup, Geyser/Floodgate enablement, and Java ownership of UDP 19132. Windows was stopped/inactive.
+- Core updater phase is complete. Do not reopen or rerun it during the addon tooling phase absent a new request.
+
+### Datapack manager source recovery
+- Current GitHub `main` was inspected. `bin/hagonoy` already routes `addons` to `bin/hagonoy-datapacks.py`, but that target script, `bin/hagonoy-datapacks-remote.py`, and `tests/datapack-deploy-check.py` are missing. The older `bin/hagonoy-addons.py` is an inventory-only script and not the manager.
+- The current Ubuntu and Windows lifecycle scripts were inspected and have no automatic datapack sync hooks. Keep datapack sync as its own explicit command.
+- Recovered the hardened three-file manager source from the project Library and independently verified its hashes:
+  - manager: `1ebc2a13aab514e134b6469911961f5d584c60e745a205ae579f575d74d6a70d`
+  - remote helper: `c2e340e15076a16de917372f913f3a1f236adcf5601ec1d6ebbd8d39544ca738`
+  - regression tests: `b1819761e4c0964ede6cc7663275d175868a0272973d8ae270e26747e83b8a13`
+- Python compilation and the full offline regression fixture suite passed. Tests cover additive/no-overwrite behavior, registration-only behavior, full-batch validation, delayed reload plus enabled-list readback, disabled-pack handling without auto-enable, malformed JSON/path/symlink checks, exact runtime IDs, log rotation/polling, stage ownership, and remote timeout bounds.
+- Prepared `hsmp-datapack-manager-recovery.zip` (SHA-256 `d16709f531289c40f844f8526647babf149296cdf2cbd5ad4c70f804e45553e5`). Its guarded installer was tested against a temporary fixture repo: source installation and test-runner insertion passed; a second run was idempotent; a sentinel `config/approved-datapacks.json` remained byte-identical.
+- Package has not been applied to the user's WSL checkout or published as source. No source-code commit/push was performed. The user's existing 13-pack approval manifest is deliberately omitted from the package.
+- The 13 approved VanillaTweaks packs were previously confirmed enabled on the Ubuntu live world on 2026-11-12. No live sync, reload, world edit, backup, or server operation occurred during this 2026-11-14 recovery work.
+
+### Next action
+- Reconcile/apply the guarded package only against the user's exact WSL working tree; preserve the real approval manifest. Run the integrated compile/tests and diff checks, then review the source diff.
+- After datapack-manager integration, proceed to the separate installed-Paper-plugin updater. Keep Paper/Geyser/Floodgate under the completed core updater; do not install new plugins or touch plugin data/configuration. Actual Forge/Fabric mods are not supported by the Paper platform and require a separate approved server-platform decision.
