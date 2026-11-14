@@ -187,6 +187,37 @@ When ready, apply the displayed plan:
 
 Apply requires an exact confirmation phrase containing both target diameters. If a target would shrink a border, the confirmation phrase additionally includes `ALLOW-SHRINK`; the plan warns that players near the affected edge may be outside the new border. After applying, the script reads back and verifies both diameters and confirms the End diameter remained unchanged before saving the new local baseline. It does not restart Minecraft. Keep the local state file with the coordinator checkout; if it is lost, first-use initialization will require the live Overworld/Nether widths to already match 8:1.
 
+### Automatic Chunky border pre-generation
+
+After the border plan is explicitly confirmed and all three live border diameters have been read back successfully, Hagonoy runs the Chunky integration. The integration applies to Overworld, Nether, and End independently. It imports each world's current Bukkit world border with `chunky worldborder <world>`, which obtains that world's actual center and radius, enforces the square selection, and starts/resumes only that world's task. It does not reuse the Overworld center or radius for another dimension and does not alter any world border itself.
+
+The local coordinator settings are in `config/dual-host.conf` (ignored by Git). The documented defaults are:
+
+```bash
+CHUNKY_OVERWORLD_WORLD="world"
+CHUNKY_NETHER_WORLD="world_nether"
+CHUNKY_END_WORLD="world_the_end"
+CHUNKY_RATE_LIMIT="1"
+```
+
+Use the actual Bukkit world names shown by Chunky's world list if the server uses custom level names. `CHUNKY_RATE_LIMIT` is a per-task chunks-per-second limit for newly started or resumed border tasks: `1` is the conservative default, while `0` disables rate limiting. Because the three dimensions are independent Chunky tasks, three new tasks can run concurrently; at the default limit their combined configured rate is up to about three chunks per second. Adjust this only after observing server load.
+
+Before changing a border, Hagonoy verifies that Chunky is enabled and that its configured `radius-limit` will permit the proposed radius in each dimension. A missing plugin, invalid world name, or too-small Chunky radius limit stops the apply before the border is changed. It does not install/update Chunky or edit Chunky's configuration.
+
+Duplicate and stale tasks are handled per world. A matching active task is left running; a matching paused task is resumed; a matching task recorded as completed is not repeated. If the current center/radius differs from the saved task selection, only that world's old task is cancelled and replaced. Hagonoy never uses `chunky cancel` without naming the affected world, so it does not cancel jobs in the other dimensions. The integration preserves the user's prior Chunky selection after setup. Chunky skips already-generated chunks when its `force-load-existing-chunks` option is false (the default); the integration does not trim or delete chunks.
+
+Check progress and completion at any time:
+
+```bash
+./hagonoy border --chunks-status
+```
+
+The status is based on Chunky's own `plugins/Chunky/tasks.log` and saved per-world task files. A dimension is marked `COMPLETE` only when Chunky recorded a `completed` event for the current border center and radius. A paused job is reported as resumable; running `./hagonoy border --apply` again reconciles all three dimensions and resumes/restarts only what is needed. Generation is asynchronous: the apply command confirms that tasks were started or resumed, not that all chunks are already finished.
+
+Chunky generates whole 16×16 chunks. A world border can cut through the edge chunks, so exact block-level clipping is impossible; Chunky's square world-border selection uses its chunk-grid boundary rules and does not expand the selection by an extra margin. This means the outermost included chunk may have blocks beyond the mathematical border line, but players remain restricted by the actual Minecraft world border. The integration does not generate an intentionally larger radius to hide that chunk-grid limitation.
+
+For borders changed directly through the Minecraft console or another plugin, run `./hagonoy border --apply` afterward to reconcile the O/N 8:1 pair and refresh Chunky's three selections. Hagonoy cannot observe arbitrary third-party border commands in real time; border changes should therefore be routed through the manager or followed by this reconciliation command.
+
 The isolated synchronization-rule tests can be run with:
 
 ```bash
