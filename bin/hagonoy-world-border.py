@@ -102,6 +102,7 @@ def run_chunky_helper(
     session: str,
     server_dir: str,
     settings: dict[str, str],
+    expected_widths: dict[str, float] | None = None,
 ) -> None:
     helper = ROOT / "bin" / "hagonoy_chunky_pregen.py"
     if not helper.is_file():
@@ -110,6 +111,12 @@ def run_chunky_helper(
         sys.executable, str(helper), mode, host, target, session, server_dir,
         settings["overworld"], settings["nether"], settings["end"], settings["rate_limit"],
     ]
+    if expected_widths is not None:
+        args.extend([
+            f"{expected_widths['overworld']:.12g}",
+            f"{expected_widths['nether']:.12g}",
+            f"{expected_widths['end']:.12g}",
+        ])
     try:
         result = subprocess.run(args, text=True, capture_output=True, timeout=240, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -419,7 +426,14 @@ def main() -> None:
         print("[hagonoy] PLAN ONLY. No world-border settings or synchronization state were changed.")
         return
 
-    run_chunky_helper("--preflight", host, target, session, server_dir, chunky)
+    run_chunky_helper(
+        "--preflight", host, target, session, server_dir, chunky,
+        {
+            "overworld": targets[OVERWORLD],
+            "nether": targets[NETHER],
+            "end": current[END],
+        },
+    )
 
     shrink = any(targets[d] < pair[d] - 0.01 for d in (OVERWORLD, NETHER))
     phrase = (
