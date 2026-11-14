@@ -37,6 +37,22 @@ def test_dimension_specific_selection_fingerprints() -> None:
     assert not module.fingerprint_matches(overworld, end)
 
 
+def test_border_diameter_verification_accepts_and_rejects() -> None:
+    selection = {"radius_x": 1250.0}
+    module.verify_border_diameter(selection, 2500.0, "world_nether")
+    try:
+        module.verify_border_diameter(selection, 3000.0, "world_nether")
+    except RuntimeError as exc:
+        assert "does not match" in str(exc)
+    else:
+        raise AssertionError("mismatched imported border diameter must fail")
+
+
+def test_pause_acknowledgement_patterns() -> None:
+    assert module.PAUSED_RE.search("Task paused for world_nether.")
+    assert module.NO_TASKS_PAUSE_RE.search("No tasks to pause.")
+
+
 def test_task_properties_preserve_each_world_selection() -> None:
     values = module.properties(
         "world=world_nether\n"
@@ -114,6 +130,8 @@ if __name__ == "__main__":
     for test in (
         test_center_and_radius_output_parsing,
         test_dimension_specific_selection_fingerprints,
+        test_border_diameter_verification_accepts_and_rejects,
+        test_pause_acknowledgement_patterns,
         test_task_properties_preserve_each_world_selection,
         test_task_log_completion_is_matched_to_geometry,
         test_latest_paused_event_overrides_old_completion,
