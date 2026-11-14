@@ -25,6 +25,7 @@ RADIUS_RE = re.compile(r"Radius changed to\s+(-?(?:\d+(?:\.\d+)?|\.\d+))\.", re.
 WORLD_MISSING_RE = re.compile(r"World .* not found\. Available worlds:", re.IGNORECASE)
 STARTED_RE = re.compile(r"Task started in ", re.IGNORECASE)
 START_CONFIRM_RE = re.compile(r"A task was already started for this world", re.IGNORECASE)
+ALREADY_ACTIVE_RE = re.compile(r"Task already started for ", re.IGNORECASE)
 START_LIMIT_RE = re.compile(r"maximum pre-generation radius", re.IGNORECASE)
 SHAPE_RE = re.compile(r"Shape changed to square\.", re.IGNORECASE)
 LIMIT_RE = re.compile(r"Rate limit for .* set to .* chunks per second\.", re.IGNORECASE)
@@ -424,10 +425,14 @@ def sync_world(
     # Start a fresh task for this world only; Chunky skips already-generated chunks by default.
     output = clean_text(console.command(
         f"chunky start {world} square",
-        any_of=(STARTED_RE, START_CONFIRM_RE),
+        any_of=(STARTED_RE, START_CONFIRM_RE, ALREADY_ACTIVE_RE),
         rejected=(START_LIMIT_RE,),
         timeout=10,
     ))
+    if ALREADY_ACTIVE_RE.search(output):
+        worlds_state[world] = {**current, "status": "running"}
+        save_pregen_state(state)
+        return "already running"
     if START_CONFIRM_RE.search(output):
         # A cancelled but stale task record can still require Chunky's "new task" confirmation.
         output = clean_text(console.command(
