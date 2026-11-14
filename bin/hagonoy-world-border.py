@@ -451,7 +451,14 @@ def main() -> None:
         print("[hagonoy] Cancelled. No world-border settings or synchronization state were changed.")
         return
     apply_targets(host, target, session, pair, targets, current[END])
-    run_chunky_helper("--run", host, target, session, server_dir, chunky)
+    run_chunky_helper(
+        "--run", host, target, session, server_dir, chunky,
+        {
+            "overworld": targets[OVERWORLD],
+            "nether": targets[NETHER],
+            "end": current[END],
+        },
+    )
 
 
 if __name__ == "__main__":
