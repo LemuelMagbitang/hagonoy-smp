@@ -276,7 +276,13 @@ def fingerprint_matches(saved: dict[str, object], desired: dict[str, object]) ->
                 return False
         except (KeyError, TypeError, ValueError):
             return False
-    return str(saved.get("shape", "")).lower() == "square"
+    if str(saved.get("shape", "")).lower() != "square":
+        return False
+    if "pattern" in desired and str(saved.get("pattern", "ring")).lower() != str(desired["pattern"]).lower():
+        return False
+    if "csv" in desired and saved.get("csv") != desired.get("csv"):
+        return False
+    return True
 
 
 def active_task_matches(
@@ -289,15 +295,15 @@ def active_task_matches(
 ) -> bool:
     saved_properties, event = task_snapshot(host, ssh_target, server_dir, world)
     saved = task_fingerprint_from_properties(saved_properties)
-    if saved is not None and fingerprint_matches(saved, desired):
+    if saved is not None and fingerprint_matches(saved, desired_task):
         return True
     if (
         event is not None
         and event[0] in {"started", "continued"}
-        and fingerprint_matches(event[1], desired)
+        and fingerprint_matches(event[1], desired_task)
     ):
         return True
-    return event is None and isinstance(state_entry, dict) and fingerprint_matches(state_entry, desired)
+    return event is None and isinstance(state_entry, dict) and fingerprint_matches(state_entry, desired_task)
 
 
 def task_fingerprint_from_properties(values: dict[str, str]) -> dict[str, object] | None:
@@ -309,6 +315,8 @@ def task_fingerprint_from_properties(values: dict[str, str]) -> dict[str, object
             "radius_x": radius,
             "radius_z": float(values.get("radius-z", radius)),
             "shape": values.get("shape", "square").lower(),
+            "pattern": values.get("pattern", "ring").lower(),
+            "csv": values.get("csv"),
         }
     except (KeyError, TypeError, ValueError):
         return None
@@ -382,6 +390,13 @@ def set_square_and_limit(console: Console, rate_limit: int) -> None:
     console.command(
         "chunky shape square",
         required=(SHAPE_RE,),
+        timeout=8,
+    )
+    # Ring is Chunky's complete-region traversal. A user's custom iterator may
+    # have been a CSV subset or other partial order, so do not rely on it.
+    console.command(
+        "chunky pattern ring",
+        required=(PATTERN_RE,),
         timeout=8,
     )
     console.command(
@@ -485,6 +500,7 @@ def sync_world(
     if not fingerprint_matches(current, desired):
         fail(f"{world}: Chunky's imported border selection did not match the preflight fingerprint.")
 
+    task_selection = {**current, "pattern": "ring"}
     props, event = task_snapshot(host, ssh_target, server_dir, world)
     saved = task_fingerprint_from_properties(props)
     worlds_state = state["worlds"]
@@ -493,12 +509,12 @@ def sync_world(
     active_worlds = progress_worlds(console)
     is_active = world in active_worlds
 
-    if is_active and active_task_matches(host, ssh_target, server_dir, world, current, state_entry):
-        worlds_state[world] = {**current, "status": "running"}
+    if is_active and active_task_matches(host, ssh_target, server_dir, world, task_selection, state_entry):
+        worlds_state[world] = {**task_selection, "status": "running"}
         save_pregen_state(state)
         return "already running"
 
-    if saved is not None and fingerprint_matches(saved, current):
+    if saved is not None and fingerprint_matches(saved, task_selection):
         is_cancelled = props.get("cancelled", "true").strip().lower() == "true"
         if not is_cancelled:
             if is_active:
@@ -531,10 +547,10 @@ def sync_world(
         not is_active
         and event is not None
         and event[0] == "completed"
-        and fingerprint_matches(event[1], current)
+        and fingerprint_matches(event[1], task_selection)
         and (saved is None or props.get("cancelled", "true").strip().lower() == "true")
     ):
-        worlds_state[world] = {**current, "status": "completed"}
+        worlds_state[world] = {**task_selection, "status": "completed"}
         save_pregen_state(state)
         return "already complete"
 
@@ -619,10 +635,11 @@ def show_status(
         saved = task_fingerprint_from_properties(props)
         state_entry = worlds_state.get(world) if isinstance(worlds_state, dict) else None
         desired = selections[dimension]
+        desired_task = {**desired, "pattern": "ring"}
         same_logged_active = (
             event is not None
             and event[0] in {"started", "continued"}
-            and fingerprint_matches(event[1], desired)
+            and fingerprint_matches(event[1], desired_task)
         )
         same_state_active = (
             event is None
