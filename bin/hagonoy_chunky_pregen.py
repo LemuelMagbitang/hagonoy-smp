@@ -529,7 +529,7 @@ def sync_world(
         save_pregen_state(state)
         return "already complete"
 
-    if is_active or (saved is not None and props.get("cancelled", "true").strip().lower() == "false"):
+    if is_active:
         pause_world_task(console, host, ssh_target, server_dir, world)
 
     set_square_and_limit(console, rate_limit)
