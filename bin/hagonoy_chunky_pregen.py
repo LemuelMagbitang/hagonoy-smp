@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import fcntl
 import re
 import shlex
@@ -48,15 +47,11 @@ ALREADY_ACTIVE_RE = re.compile(r"Task already started for ", re.IGNORECASE)
 START_LIMIT_RE = re.compile(r"maximum pre-generation radius", re.IGNORECASE)
 SHAPE_RE = re.compile(r"Shape changed to square\.", re.IGNORECASE)
 LIMIT_RE = re.compile(r"Rate limit for .* set to .* chunks per second\.", re.IGNORECASE)
-NO_TASKS_RE = re.compile(r"No tasks to cancel\.", re.IGNORECASE)
-CANCEL_PROMPT_RE = re.compile(r"Cancelled tasks cannot be continued", re.IGNORECASE)
-CANCELLED_RE = re.compile(r"Task cancelled for ", re.IGNORECASE)
 PAUSED_RE = re.compile(r"Task paused for ", re.IGNORECASE)
 NO_TASKS_PAUSE_RE = re.compile(r"No tasks to pause\.", re.IGNORECASE)
 PROGRESS_RE = re.compile(r"Task running for (.+?)\. Processed:", re.IGNORECASE)
 NO_PROGRESS_RE = re.compile(r"No tasks running\.", re.IGNORECASE)
 TASK_LOG_RE = re.compile(r"^\[[^\]]+\]\s+(\w+)\s+(.*)$")
-NUMBER_RE = re.compile(r"^-?(?:\d+(?:\.\d+)?|\.\d+)$")
 
 
 def fail(message: str) -> "NoReturn":
@@ -264,6 +259,15 @@ def properties(text: str) -> dict[str, str]:
     return result
 
 
+def verify_border_diameter(selection: dict[str, object], expected: float, world: str) -> None:
+    actual = float(selection["radius_x"]) * 2
+    if not math.isfinite(expected) or expected <= 0 or abs(actual - expected) > 0.01:
+        fail(
+            f"Chunky's imported {world} border diameter ({actual:g}) does not match "
+            f"the applied diameter ({expected:g})."
+        )
+
+
 def fingerprint_matches(saved: dict[str, object], desired: dict[str, object]) -> bool:
     for key in ("center_x", "center_z", "radius_x", "radius_z"):
         try:
@@ -425,17 +429,8 @@ def preflight(
                 fail(f"Chunky world name '{world}' is assigned to more than one dimension.")
             seen.add(world)
             selection = import_border(console, world)
-            if (
-                verify_diameters
-                and expected_diameters is not None
-                and dimension in expected_diameters
-                and abs(float(selection["radius_x"]) * 2 - float(expected_diameters[dimension])) > 0.01
-            ):
-                fail(
-                    f"Chunky's imported {world} border diameter "
-                    f"({float(selection['radius_x']) * 2:g}) does not match "
-                    f"the applied diameter ({float(expected_diameters[dimension]):g})."
-                )
+            if verify_diameters and expected_diameters is not None and dimension in expected_diameters:
+                verify_border_diameter(selection, float(expected_diameters[dimension]), world)
             radius_to_check = (
                 float(expected_diameters[dimension]) / 2
                 if expected_diameters is not None and dimension in expected_diameters
