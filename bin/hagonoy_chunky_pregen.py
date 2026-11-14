@@ -269,6 +269,40 @@ def verify_border_diameter(selection: dict[str, object], expected: float, world:
         )
 
 
+def chunk_grid_coverage(selection: dict[str, object]) -> dict[str, int]:
+    """Compare Chunky's chunk-aligned square with chunks intersecting the border square."""
+    center_x = float(selection["center_x"])
+    center_z = float(selection["center_z"])
+    radius_x = float(selection["radius_x"])
+    radius_z = float(selection["radius_z"])
+    # Match Chunky Selection: (int) center >> 4, then ceil(radius / 16).
+    qx = math.trunc(center_x) >> 4
+    qz = math.trunc(center_z) >> 4
+    nx = math.ceil(radius_x / 16)
+    nz = math.ceil(radius_z / 16)
+    selected_x = (qx - nx, qx + nx)
+    selected_z = (qz - nz, qz + nz)
+    # Border blocks occupy [center-radius, center+radius); include every chunk
+    # with positive-area intersection and exclude chunks touching only the edge.
+    exact_x = (math.floor((center_x - radius_x) / 16), math.ceil((center_x + radius_x) / 16) - 1)
+    exact_z = (math.floor((center_z - radius_z) / 16), math.ceil((center_z + radius_z) / 16) - 1)
+    overlap_x = max(0, min(selected_x[1], exact_x[1]) - max(selected_x[0], exact_x[0]) + 1)
+    overlap_z = max(0, min(selected_z[1], exact_z[1]) - max(selected_z[0], exact_z[0]) + 1)
+    selected_count = (selected_x[1] - selected_x[0] + 1) * (selected_z[1] - selected_z[0] + 1)
+    exact_count = (exact_x[1] - exact_x[0] + 1) * (exact_z[1] - exact_z[0] + 1)
+    overlap_count = overlap_x * overlap_z
+    return {
+        "selected_x": selected_x[1] - selected_x[0] + 1,
+        "selected_z": selected_z[1] - selected_z[0] + 1,
+        "inside_x": exact_x[1] - exact_x[0] + 1,
+        "inside_z": exact_z[1] - exact_z[0] + 1,
+        "selected_chunks": selected_count,
+        "inside_chunks": exact_count,
+        "missing_chunks": exact_count - overlap_count,
+        "extra_chunks": selected_count - overlap_count,
+    }
+
+
 def fingerprint_matches(saved: dict[str, object], desired: dict[str, object]) -> bool:
     for key in ("center_x", "center_z", "radius_x", "radius_z"):
         try:
@@ -468,6 +502,13 @@ def preflight(
             selection = import_border(console, world)
             if verify_diameters and expected_diameters is not None and dimension in expected_diameters:
                 verify_border_diameter(selection, float(expected_diameters[dimension]), world)
+            coverage = chunk_grid_coverage(selection)
+            if coverage["missing_chunks"] > 0:
+                fail(
+                    f"Chunky's chunk-aligned square would omit {coverage['missing_chunks']} "
+                    f"chunks intersecting {world}'s border. Refusing an incomplete pre-generation plan."
+                )
+            selection["chunk_coverage"] = coverage
             radius_to_check = (
                 float(expected_diameters[dimension]) / 2
                 if expected_diameters is not None and dimension in expected_diameters
@@ -698,9 +739,16 @@ def main() -> int:
             if mode == "--preflight":
                 selections = preflight(console, host, ssh_target, server_dir, worlds, expected)
                 for dimension, selection in selections.items():
+                    coverage = selection["chunk_coverage"]
                     print(
                         f"{dimension}: world={selection['world']} center=({selection['center_x']}, "
-                        f"{selection['center_z']}) current radius={selection['radius_x']}"
+                        f"{selection['center_z']}) radius={selection['radius_x']}; "
+                        f"Chunky grid={coverage['selected_x']}x{coverage['selected_z']} "
+                        f"({coverage['selected_chunks']:,} chunks), "
+                        f"border-intersecting={coverage['inside_x']}x{coverage['inside_z']} "
+                        f"({coverage['inside_chunks']:,} chunks), "
+                        f"extra edge chunks={coverage['extra_chunks']:,}, "
+                        f"omitted={coverage['missing_chunks']}"
                     )
                 if expected is not None:
                     print("Chunky radius-limit preflight passed for all proposed border diameters.")
