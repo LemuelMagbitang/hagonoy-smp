@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import fcntl
 import re
 import shlex
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".hagonoy-world-border-chunky-state.json"
+LOCK = ROOT / ".hagonoy-world-border-chunky.lock"
 PLUGINS_RE = re.compile(r"Plugins\s*\(\d+\)\s*:\s*(.*)", re.IGNORECASE)
 CENTER_RE = re.compile(
     r"Center changed to\s+(-?(?:\d+(?:\.\d+)?|\.\d+)),"
@@ -660,25 +662,28 @@ def main() -> int:
             return 2
     worlds = {"overworld": ow, "nether": nether, "end": end}
     try:
-        console = Console(host, ssh_target, session)
-        if mode == "--preflight":
-            selections = preflight(console, host, ssh_target, server_dir, worlds, expected)
-            for dimension, selection in selections.items():
-                print(
-                    f"{dimension}: world={selection['world']} center=({selection['center_x']}, "
-                    f"{selection['center_z']}) current radius={selection['radius_x']}"
-                )
-            if expected is not None:
-                print("Chunky radius-limit preflight also passed for all proposed border diameters.")
-        elif mode == "--run":
-            if not rate.isdigit() or int(rate) < 0 or int(rate) > 1000:
-                fail("Chunky rate limit must be an integer from 0 through 1000.")
-            run_pregen(host, ssh_target, session, server_dir, worlds, int(rate), expected)
-        elif mode == "--status":
-            show_status(host, ssh_target, session, server_dir, worlds)
-        else:
-            print("Unknown Chunky pre-generation mode.", file=sys.stderr)
-            return 2
+        LOCK.parent.mkdir(parents=True, exist_ok=True)
+        with LOCK.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            console = Console(host, ssh_target, session)
+            if mode == "--preflight":
+                selections = preflight(console, host, ssh_target, server_dir, worlds, expected)
+                for dimension, selection in selections.items():
+                    print(
+                        f"{dimension}: world={selection['world']} center=({selection['center_x']}, "
+                        f"{selection['center_z']}) current radius={selection['radius_x']}"
+                    )
+                if expected is not None:
+                    print("Chunky radius-limit preflight passed for all proposed border diameters.")
+            elif mode == "--run":
+                if not rate.isdigit() or int(rate) < 0 or int(rate) > 1000:
+                    fail("Chunky rate limit must be an integer from 0 through 1000.")
+                run_pregen(host, ssh_target, session, server_dir, worlds, int(rate), expected)
+            elif mode == "--status":
+                show_status(host, ssh_target, session, server_dir, worlds)
+            else:
+                print("Unknown Chunky pre-generation mode.", file=sys.stderr)
+                return 2
         return 0
     except RuntimeError as exc:
         print(f"[hagonoy-chunky] ERROR: {exc}", file=sys.stderr)
