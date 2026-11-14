@@ -422,10 +422,6 @@ def main() -> None:
     print("Chunky will import the live center/radius and pre-generate the square selection independently for all three configured worlds.")
     print(f"Chunky rate limit: {chunky['rate_limit']} chunks/second per world (0 = unlimited).")
 
-    if sys.argv[1] == "--plan":
-        print("[hagonoy] PLAN ONLY. No world-border settings or synchronization state were changed.")
-        return
-
     run_chunky_helper(
         "--preflight", host, target, session, server_dir, chunky,
         {
@@ -434,6 +430,10 @@ def main() -> None:
             "end": current[END],
         },
     )
+
+    if sys.argv[1] == "--plan":
+        print("[hagonoy] PLAN ONLY. No world-border settings or synchronization state were changed.")
+        return
 
     shrink = any(targets[d] < pair[d] - 0.01 for d in (OVERWORLD, NETHER))
     phrase = (
