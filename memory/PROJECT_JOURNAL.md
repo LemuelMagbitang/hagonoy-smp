@@ -346,7 +346,7 @@ User supplied source for Paper and GeyserMC metadata retrieval, verified downloa
   - remote helper: `c2e340e15076a16de917372f913f3a1f236adcf5601ec1d6ebbd8d39544ca738`
   - regression tests: `b1819761e4c0964ede6cc7663275d175868a0272973d8ae270e26747e83b8a13`
 - Python compilation and the full offline regression fixture suite passed. Tests cover additive/no-overwrite behavior, registration-only behavior, full-batch validation, delayed reload plus enabled-list readback, disabled-pack handling without auto-enable, malformed JSON/path/symlink checks, exact runtime IDs, log rotation/polling, stage ownership, and remote timeout bounds.
-- Prepared `hsmp-datapack-manager-recovery.zip` (SHA-256 `d16709f531289c40f844f8526647babf149296cdf2cbd5ad4c70f804e45553e5`). Its guarded installer was tested against a temporary fixture repo: source installation and test-runner insertion passed; a second run was idempotent; a sentinel `config/approved-datapacks.json` remained byte-identical.
+- Prepared `hsmp-datapack-manager-recovery.zip` (SHA-256 `3a4a034b59fb2ec9e0d66bad0dd20cdcff8b5506a232b7e14e818ca645760f9e`). Its guarded installer was tested against a temporary fixture repo: source installation and test-runner insertion passed; a second run was idempotent; a sentinel `config/approved-datapacks.json` remained byte-identical.
 - Package has not been applied to the user's WSL checkout or published as source. No source-code commit/push was performed. The user's existing 13-pack approval manifest is deliberately omitted from the package.
 - The 13 approved VanillaTweaks packs were previously confirmed enabled on the Ubuntu live world on 2026-11-12. No live sync, reload, world edit, backup, or server operation occurred during this 2026-11-14 recovery work.
 
