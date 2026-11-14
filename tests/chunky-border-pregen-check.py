@@ -113,6 +113,43 @@ def test_task_paths_are_dimension_specific_and_reject_traversal() -> None:
         raise AssertionError("path traversal should be rejected")
 
 
+def test_atomic_runtime_state_save_and_reload() -> None:
+    import tempfile
+
+    previous = module.STATE
+    with tempfile.TemporaryDirectory(prefix="chunky-border-state-test-") as tmp:
+        module.STATE = Path(tmp) / "state.json"
+        state = {"schema": 1, "worlds": {"world": {
+            "center_x": -2349, "center_z": 38, "radius_x": 10000,
+            "radius_z": 10000, "shape": "square", "status": "running",
+        }}}
+        module.save_pregen_state(state)
+        loaded = module.load_pregen_state()
+        assert loaded == state
+    module.STATE = previous
+
+
+def test_external_active_task_requires_matching_selection() -> None:
+    previous = module.task_snapshot
+    desired = {
+        "center_x": -293.0, "center_z": 4.0,
+        "radius_x": 1250.0, "radius_z": 1250.0, "shape": "square",
+    }
+    try:
+        module.task_snapshot = lambda *args: ({
+            "center-x": "-293", "center-z": "4", "radius": "1250",
+            "shape": "square",
+        }, None)
+        assert module.active_task_matches("UBUNTU", "host", "server", "world_nether", desired)
+        module.task_snapshot = lambda *args: ({
+            "center-x": "-293", "center-z": "4", "radius": "900",
+            "shape": "square",
+        }, None)
+        assert not module.active_task_matches("UBUNTU", "host", "server", "world_nether", desired)
+    finally:
+        module.task_snapshot = previous
+
+
 def test_only_square_chunky_selection_is_accepted() -> None:
     expected = {
         "center_x": 0, "center_z": 0, "radius_x": 10000,
@@ -137,6 +174,8 @@ if __name__ == "__main__":
         test_latest_paused_event_overrides_old_completion,
         test_task_paths_are_dimension_specific_and_reject_traversal,
         test_only_square_chunky_selection_is_accepted,
+        test_atomic_runtime_state_save_and_reload,
+        test_external_active_task_requires_matching_selection,
     ):
         test()
     print("[DONE] Chunky border pre-generation tests passed.")
