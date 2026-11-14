@@ -287,20 +287,17 @@ def progress_worlds(console: Console) -> set[str]:
     return {name.strip() for name in PROGRESS_RE.findall(output)}
 
 
-def set_selection_and_limit(console: Console, world: str, rate_limit: int) -> dict[str, object]:
-    selected = import_border(console, world)
+def set_square_and_limit(console: Console, rate_limit: int) -> None:
     console.command(
         "chunky shape square",
         required=(SHAPE_RE,),
         timeout=8,
     )
-    # The limit is configured independently for each world's task, not globally.
     console.command(
         f"chunky limit {rate_limit}",
         required=(LIMIT_RE,),
         timeout=8,
     )
-    return selected
 
 
 def cancel_world_task(console: Console, world: str) -> None:
@@ -380,8 +377,8 @@ def sync_world(
     rate_limit: int,
     state: dict[str, object],
 ) -> str:
-    # Refresh the actual Bukkit border after Hagonoy has applied and verified it.
-    current = set_selection_and_limit(console, world, rate_limit)
+    # Import this world's own live Bukkit border, never a shared hard-coded radius.
+    current = import_border(console, world)
     if not fingerprint_matches(current, desired):
         fail(f"{world}: Chunky's imported border selection did not match the preflight fingerprint.")
 
@@ -389,7 +386,6 @@ def sync_world(
     saved = task_fingerprint_from_properties(props)
     worlds_state = state["worlds"]
     assert isinstance(worlds_state, dict)
-    state_entry = worlds_state.get(world)
     active_worlds = progress_worlds(console)
     is_active = world in active_worlds
 
@@ -400,11 +396,13 @@ def sync_world(
                 worlds_state[world] = {**current, "status": "running"}
                 save_pregen_state(state)
                 return "already running"
-            # Resume only this world's exact, previously saved selection.
+            # Resume this world's exact saved border selection. No task is duplicated:
+            # Chunky's continue command refuses to add a second task for a running world.
+            set_square_and_limit(console, rate_limit)
             output = clean_text(console.command(
                 f"chunky continue {world}",
                 any_of=(re.compile(r"Task continuing for ", re.IGNORECASE),
-                        re.compile(r"Task already started for ", re.IGNORECASE),
+                        ALREADY_ACTIVE_RE,
                         re.compile(r"No tasks to continue\.", re.IGNORECASE)),
                 timeout=10,
             ))
@@ -414,7 +412,15 @@ def sync_world(
             save_pregen_state(state)
             return "resumed"
 
-    if event is not None and event[0] == "completed" and fingerprint_matches(event[1], current):
+    # A completed task is reusable only when its logged center and radius still
+    # match the current border and there is no conflicting active task.
+    if (
+        not is_active
+        and event is not None
+        and event[0] == "completed"
+        and fingerprint_matches(event[1], current)
+        and (saved is None or props.get("cancelled", "true").strip().lower() == "true")
+    ):
         worlds_state[world] = {**current, "status": "completed"}
         save_pregen_state(state)
         return "already complete"
@@ -422,7 +428,7 @@ def sync_world(
     if is_active or (saved is not None and props.get("cancelled", "true").strip().lower() == "false"):
         cancel_world_task(console, world)
 
-    # Start a fresh task for this world only; Chunky skips already-generated chunks by default.
+    set_square_and_limit(console, rate_limit)
     output = clean_text(console.command(
         f"chunky start {world} square",
         any_of=(STARTED_RE, START_CONFIRM_RE, ALREADY_ACTIVE_RE),
@@ -434,7 +440,6 @@ def sync_world(
         save_pregen_state(state)
         return "already running"
     if START_CONFIRM_RE.search(output):
-        # A cancelled but stale task record can still require Chunky's "new task" confirmation.
         output = clean_text(console.command(
             "chunky confirm",
             required=(STARTED_RE,),
